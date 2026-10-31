@@ -16,6 +16,10 @@
     "postgresVersion": "16.3"
   },
   "complete": true,
+  "integrity": {
+    "status": "INTACT",
+    "violations": []
+  },
   "summary": {
     "clean": 3,
     "inconclusive": 0,

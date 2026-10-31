@@ -1,8 +1,10 @@
 import type { GroupOutcome, ProbeRun, Sandbox, ScalarOutcome, StatementOutcome } from "../../application/ports.js";
 import type { ProbeObservation } from "../../domain/proof/types.js";
-import { dollarQuote, quoteIdent, quoteLiteral } from "../../domain/sql/quote.js";
-import { HARNESS_STATEMENTS } from "./harness.js";
-import { TransportError, type SqlTransport } from "./transport.js";
+import { quoteIdent } from "../../domain/sql/quote.js";
+import { platformStatements, roleStatements, type PlatformNames, type RolePasswords } from "../../domain/supabase/shim.js";
+import { CATALOG_QUERY, fingerprintQuery } from "./catalog-sql.js";
+import * as sql from "./statements.js";
+import { TransportError, type Accounts, type SessionSpec, type SqlTransport, type Step } from "./transport.js";
 
 interface Reply {
   readonly ok?: unknown;
@@ -14,14 +16,14 @@ interface Reply {
 }
 
 function reply(cell: string | undefined): Reply {
-  if (cell === undefined) throw new TransportError("the database returned fewer results than statements sent");
+  if (cell === undefined || cell === "") throw new TransportError("the database returned no reply for a statement");
   try {
     const parsed: unknown = JSON.parse(cell);
     if (typeof parsed === "object" && parsed !== null) return parsed as Reply;
   } catch {
     // fall through
   }
-  throw new TransportError("the database returned something that is not a harness reply");
+  throw new TransportError("the database returned something that is not a reply");
 }
 
 const text = (v: unknown, fallback: string): string => (typeof v === "string" ? v : fallback);
@@ -35,21 +37,18 @@ export interface SandboxNaming {
   readonly statementTimeoutMs?: number;
 }
 
-/** Per-database settings. They are not copied by CREATE DATABASE ... TEMPLATE, so forks get them again. */
-function settings(database: string, naming: SandboxNaming): string[] {
-  const db = quoteIdent(database);
-  const timeout = Math.max(100, Math.floor(naming.statementTimeoutMs ?? 20_000));
-  return [
-    `ALTER DATABASE ${db} SET search_path TO "$user", public, extensions`,
-    `ALTER DATABASE ${db} SET statement_timeout = ${timeout}`,
-    `ALTER DATABASE ${db} SET lock_timeout = 5000`,
-    `ALTER DATABASE ${db} SET idle_in_transaction_session_timeout = 30000`,
-  ];
+export interface SandboxSetup {
+  readonly accounts: Accounts;
+  readonly passwords: RolePasswords;
 }
 
+const DEFAULT_TIMEOUT = 20_000;
+
 /**
- * The sandbox on top of any transport. Each operation is one SELECT per item against the harness functions,
- * so the SQL under analysis only ever runs inside `proof_audit.try_exec` / `run_probe` as a string.
+ * The sandbox on top of any transport. Three database roles keep the project's SQL away from anything the verdicts
+ * depend on: the migrator runs everything from the project and has no superuser rights, the prober runs the probes, the
+ * admin only runs statements written by this tool (provisioning, the catalog read, the fingerprint, CREATE and DROP
+ * DATABASE). No function is stored in the database for the tool to call; see `statements.ts`.
  */
 export class PostgresSandbox implements Sandbox {
   private disposed = false;
@@ -58,27 +57,47 @@ export class PostgresSandbox implements Sandbox {
     private readonly transport: SqlTransport,
     private readonly database: string,
     private readonly naming: SandboxNaming,
+    private readonly accounts: Accounts,
     private readonly onDispose: () => Promise<void> = async () => undefined,
   ) {}
 
-  /** Create the database, install the harness and return a sandbox for it. */
-  static async create(transport: SqlTransport, naming: SandboxNaming, onDispose?: () => Promise<void>): Promise<PostgresSandbox> {
+  private spec(database: string, principal: SessionSpec["principal"], pin: SessionSpec["pin"]): SessionSpec {
+    return { database, principal, pin, statementTimeoutMs: this.naming.statementTimeoutMs ?? DEFAULT_TIMEOUT };
+  }
+
+  private static async admin(transport: SqlTransport, naming: SandboxNaming, database: string, statements: readonly string[]): Promise<void> {
+    const steps: Step[] = statements.map((s) => ({ sql: s, fetch: false }));
+    await transport.run({ database, principal: "admin", pin: "catalog", statementTimeoutMs: naming.statementTimeoutMs ?? DEFAULT_TIMEOUT }, steps);
+  }
+
+  private static names(accounts: Accounts): PlatformNames {
+    return { admin: accounts.admin.user, migrator: accounts.migrator.user, prober: accounts.prober.user };
+  }
+
+  /** Create the sandbox's roles and database and provision the platform in it. The returned sandbox owns the database. */
+  static async create(transport: SqlTransport, naming: SandboxNaming, setup: SandboxSetup, onDispose?: () => Promise<void>): Promise<PostgresSandbox> {
+    const names = PostgresSandbox.names(setup.accounts);
     const name = naming.nextName();
-    await transport.execute(naming.maintenanceDatabase, [`CREATE DATABASE ${quoteIdent(name)}`]);
-    const sandbox = new PostgresSandbox(transport, name, naming, onDispose);
+    const maintenance = naming.maintenanceDatabase;
+    const sandbox = new PostgresSandbox(transport, name, naming, setup.accounts, onDispose);
     try {
-      await transport.execute(name, HARNESS_STATEMENTS);
-      await transport.execute(naming.maintenanceDatabase, settings(name, naming));
+      await PostgresSandbox.admin(transport, naming, maintenance, roleStatements(names, setup.passwords));
+      await PostgresSandbox.admin(transport, naming, maintenance, [`CREATE DATABASE ${quoteIdent(name)}`]);
+      await PostgresSandbox.admin(transport, naming, name, platformStatements(names));
     } catch (e) {
-      await sandbox.dispose();
+      await sandbox.dispose().catch(() => undefined);
       throw e;
     }
     return sandbox;
   }
 
+  private async fetchAll(session: SessionSpec, steps: readonly Step[]): Promise<string[]> {
+    return this.transport.run(session, steps);
+  }
+
   async apply(statements: readonly string[]): Promise<StatementOutcome[]> {
     if (statements.length === 0) return [];
-    const cells = await this.transport.query(this.database, statements.map((s) => `SELECT proof_audit.try_exec(${dollarQuote(s)})::text`));
+    const cells = await this.fetchAll(this.spec(this.database, "migrator", "session"), statements.flatMap((s) => sql.tryExec(s)));
     return cells.map((c) => {
       const r = reply(c);
       return r.ok === true ? { ok: true, sqlstate: null, message: null } : { ok: false, sqlstate: text(r.sqlstate, "?????"), message: text(r.message, "") };
@@ -87,10 +106,7 @@ export class PostgresSandbox implements Sandbox {
 
   async applyFirstSuccess(groups: readonly (readonly string[])[]): Promise<GroupOutcome[]> {
     if (groups.length === 0) return [];
-    const cells = await this.transport.query(
-      this.database,
-      groups.map((g) => `SELECT proof_audit.try_first(ARRAY[${g.map(dollarQuote).join(", ")}]::text[])::text`),
-    );
+    const cells = await this.fetchAll(this.spec(this.database, "migrator", "session"), groups.flatMap((g) => sql.tryFirst(g)));
     return cells.map((c) => {
       const r = reply(c);
       if (r.ok === true) return { ok: true, attempt: typeof r.attempt === "number" ? r.attempt : 0, sqlstate: null, message: null };
@@ -100,7 +116,7 @@ export class PostgresSandbox implements Sandbox {
 
   async scalars(queries: readonly string[]): Promise<ScalarOutcome[]> {
     if (queries.length === 0) return [];
-    const cells = await this.transport.query(this.database, queries.map((q) => `SELECT proof_audit.scalar(${dollarQuote(q)})::text`));
+    const cells = await this.fetchAll(this.spec(this.database, "migrator", "session"), queries.flatMap((q) => sql.scalar(q)));
     return cells.map((c): ScalarOutcome => {
       const r = reply(c);
       if (r.ok === true) return { ok: true, value: typeof r.value === "string" || typeof r.value === "number" ? r.value : null };
@@ -109,17 +125,23 @@ export class PostgresSandbox implements Sandbox {
   }
 
   async catalog(): Promise<unknown> {
-    const [cell] = await this.transport.query(this.database, ["SELECT proof_audit.catalog()::text"]);
+    const [cell] = await this.fetchAll(this.spec(this.database, "admin", "catalog"), [{ sql: CATALOG_QUERY, fetch: true }]);
     if (cell === undefined) throw new TransportError("the database returned no catalog");
+    return JSON.parse(cell) as unknown;
+  }
+
+  async fingerprint(): Promise<unknown> {
+    const names = [this.accounts.admin.user, this.accounts.migrator.user, this.accounts.prober.user];
+    const [cell] = await this.fetchAll(this.spec(this.database, "admin", "catalog"), [{ sql: fingerprintQuery(names), fetch: true }]);
+    if (cell === undefined) throw new TransportError("the database returned no fingerprint");
     return JSON.parse(cell) as unknown;
   }
 
   async run(probes: readonly ProbeRun[]): Promise<ProbeObservation[]> {
     if (probes.length === 0) return [];
-    const statements = probes.map((p) => `SELECT proof_audit.run_probe(${quoteLiteral(p.role)}, ${quoteLiteral(p.claims)}, ${dollarQuote(p.sql)})::text`);
     let cells: string[];
     try {
-      cells = await this.transport.query(this.database, statements);
+      cells = await this.fetchAll(this.spec(this.database, "prober", "probe"), probes.flatMap((p) => sql.probe(p.role, p.claims, p.sql)));
     } catch (e) {
       const why = e instanceof Error ? e.message : "unknown error";
       return probes.map(() => ({ status: "not-run", reason: `the batch did not finish: ${why}` }));
@@ -137,16 +159,19 @@ export class PostgresSandbox implements Sandbox {
 
   async fork(): Promise<Sandbox> {
     const name = this.naming.nextName();
-    await this.transport.execute(this.naming.maintenanceDatabase, [`CREATE DATABASE ${quoteIdent(name)} TEMPLATE ${quoteIdent(this.database)}`]);
-    await this.transport.execute(this.naming.maintenanceDatabase, settings(name, this.naming));
-    return new PostgresSandbox(this.transport, name, this.naming);
+    await PostgresSandbox.admin(this.transport, this.naming, this.naming.maintenanceDatabase, [`CREATE DATABASE ${quoteIdent(name)} TEMPLATE ${quoteIdent(this.database)}`]);
+    // Per-database settings are not copied by CREATE DATABASE ... TEMPLATE; the sessions pin what they need themselves.
+    await PostgresSandbox.admin(this.transport, this.naming, name, [
+      `DO $$ BEGIN EXECUTE format('ALTER DATABASE %I SET search_path TO "$user", public, extensions', current_database()); END $$`,
+    ]);
+    return new PostgresSandbox(this.transport, name, this.naming, this.accounts);
   }
 
   async dispose(): Promise<void> {
     if (this.disposed) return;
     this.disposed = true;
     try {
-      await this.transport.execute(this.naming.maintenanceDatabase, [`DROP DATABASE IF EXISTS ${quoteIdent(this.database)} WITH (FORCE)`]);
+      await PostgresSandbox.admin(this.transport, this.naming, this.naming.maintenanceDatabase, [`DROP DATABASE IF EXISTS ${quoteIdent(this.database)} WITH (FORCE)`]);
     } finally {
       await this.onDispose();
     }

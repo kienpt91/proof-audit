@@ -54,9 +54,10 @@ until docker exec "$pg" pg_isready -q -h 127.0.0.1 -U postgres; do
   sleep 0.5
 done
 
-# The URL is built inside the container from a read-only mounted secret file, never put on a command line.
+# The URL is built inside the container from a read-only mounted secret file, never put on a command line, and handed to
+# the tool through --database-url-env, which is the explicit opt-in to a server on loopback.
 docker run --rm --network "container:$pg" --user "$(id -u):$(id -g)" \
   --cap-drop ALL --security-opt no-new-privileges --read-only --tmpfs /tmp \
   -e HOME=/tmp -v "$repo:/app:ro" -v "$vol:/app/node_modules:ro" -v "$secret:/run/pa-secret:ro" \
   -v "$PWD:/audit" -w /audit "$node_image" \
-  sh -c 'PROOF_AUDIT_DATABASE_URL="postgres://postgres:$(cat /run/pa-secret)@127.0.0.1:5432/postgres" exec node /app/dist/bin.js "$@"' sh "$@"
+  sh -c 'PROOF_AUDIT_DATABASE_URL="postgres://postgres:$(cat /run/pa-secret)@127.0.0.1:5432/postgres" exec node /app/dist/bin.js "$@" --database-url-env PROOF_AUDIT_DATABASE_URL' sh "$@"

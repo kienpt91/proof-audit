@@ -1,25 +1,33 @@
 import pg from "pg";
 import { LIMITS } from "../../domain/limits.js";
 import { assertLoopbackHost, type LoopbackEndpoint } from "../../domain/safety/loopback.js";
-import { TransportError, type SqlTransport } from "./transport.js";
+import { pinnedSettings, TransportError, type Accounts, type SessionSpec, type SqlTransport, type Step } from "./transport.js";
 
 /**
  * Talks to a Postgres server on this machine's loopback interface. The endpoint can only be built by
  * `parseLoopbackUrl`, and the host is checked again here, so no code path can point this at another machine.
+ * Each call opens a session as the account of the requested role, with the session settings pinned in the
+ * connection itself, and closes it afterwards.
  */
 export class PgTransport implements SqlTransport {
-  constructor(private readonly endpoint: LoopbackEndpoint) {
+  constructor(
+    private readonly endpoint: LoopbackEndpoint,
+    private readonly accounts: Accounts,
+  ) {
     assertLoopbackHost(endpoint.host);
   }
 
-  private async connect(database: string): Promise<pg.Client> {
+  private async connect(session: SessionSpec): Promise<pg.Client> {
+    const account = this.accounts[session.principal];
+    const options = pinnedSettings(session).map(([name, value]) => `-c ${name}=${value}`).join(" ");
     const client = new pg.Client({
       host: this.endpoint.host,
       port: this.endpoint.port,
-      user: this.endpoint.user,
-      ...(this.endpoint.password === null ? {} : { password: this.endpoint.password }),
-      database,
+      user: account.user,
+      ...(account.password === null ? {} : { password: account.password }),
+      database: session.database,
       ssl: false,
+      options,
       connectionTimeoutMillis: 10_000,
       query_timeout: LIMITS.batchTimeoutMs,
       application_name: "proof-audit",
@@ -33,31 +41,22 @@ export class PgTransport implements SqlTransport {
     return client;
   }
 
-  async query(database: string, statements: readonly string[]): Promise<string[]> {
-    const client = await this.connect(database);
+  async run(session: SessionSpec, steps: readonly Step[]): Promise<string[]> {
+    const client = await this.connect(session);
     try {
       const out: string[] = [];
-      for (const text of statements) {
-        const res = await client.query({ text, rowMode: "array" });
+      for (const step of steps) {
+        if (!step.fetch) {
+          await client.query(step.sql);
+          continue;
+        }
+        const res = await client.query({ text: step.sql, rowMode: "array" });
         const cell: unknown = res.rows[0]?.[0];
-        if (typeof cell !== "string") throw new TransportError("a statement did not return one text value");
-        out.push(cell);
+        out.push(typeof cell === "string" ? cell : "");
       }
       return out;
     } catch (e) {
-      if (e instanceof TransportError) throw e;
       throw new TransportError(e instanceof Error ? e.message.slice(0, 300) : "query failed");
-    } finally {
-      await client.end().catch(() => undefined);
-    }
-  }
-
-  async execute(database: string, statements: readonly string[]): Promise<void> {
-    const client = await this.connect(database);
-    try {
-      for (const text of statements) await client.query(text);
-    } catch (e) {
-      throw new TransportError(e instanceof Error ? e.message.slice(0, 300) : "statement failed");
     } finally {
       await client.end().catch(() => undefined);
     }

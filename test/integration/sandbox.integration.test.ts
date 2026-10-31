@@ -4,25 +4,23 @@ import { prepareSandbox } from "../../src/application/prepare.js";
 import type { Sandbox } from "../../src/application/ports.js";
 import { catalogToModel, parseCatalog } from "../../src/domain/catalog/snapshot.js";
 import { parseMigrations } from "../../src/domain/sql/parser.js";
-import { SHIM_STATEMENTS } from "../../src/domain/supabase/shim.js";
-import { PgTransport } from "../../src/infrastructure/postgres/pg-transport.js";
-import { randomNaming } from "../../src/infrastructure/postgres/names.js";
-import { PostgresSandbox } from "../../src/infrastructure/postgres/sandbox.js";
 import { UrlSandboxProvider } from "../../src/infrastructure/postgres/url-provider.js";
 import { defineSandboxContract } from "../contract/sandbox.contract.js";
 import { endpoint, haveDatabase } from "./support.js";
 
-const make = async (timeoutMs?: number): Promise<PostgresSandbox> =>
-  PostgresSandbox.create(new PgTransport(endpoint()), randomNaming(endpoint().database, timeoutMs));
+/** A sandbox created the way the CLI creates one in loopback mode. */
+const make = async (statementTimeoutMs?: number): Promise<Sandbox> => {
+  const created = await new UrlSandboxProvider(endpoint(), statementTimeoutMs === undefined ? {} : { statementTimeoutMs }).create();
+  return created.sandbox;
+};
 
-const withShim = async (s: Sandbox): Promise<void> => {
-  const out = await s.apply(SHIM_STATEMENTS);
-  if (out.some((o) => !o.ok)) throw new Error("shim failed");
-  await s.apply(['create table public.notes (id uuid primary key default gen_random_uuid(), user_id uuid not null, title text)']);
+const withTable = async (s: Sandbox): Promise<void> => {
+  const out = await s.apply(["create table public.notes (id uuid primary key default gen_random_uuid(), user_id uuid not null, title text)"]);
+  if (out.some((o) => !o.ok)) throw new Error(`setup failed: ${JSON.stringify(out)}`);
 };
 
 describe.skipIf(!haveDatabase)("real PostgreSQL", () => {
-  if (haveDatabase) defineSandboxContract("PostgresSandbox over pg on loopback", () => make(), withShim);
+  if (haveDatabase) defineSandboxContract("PostgresSandbox over pg on loopback", () => make(), withTable);
 
   it("records each failing statement and runs the rest in the same session", async () => {
     const s = await make();
@@ -40,7 +38,7 @@ describe.skipIf(!haveDatabase)("real PostgreSQL", () => {
   it("returns the row count of reads and writes and always rolls the probe back", async () => {
     const s = await make();
     try {
-      await withShim(s);
+      await withTable(s);
       await s.apply(["insert into public.notes (user_id, title) values ('aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa', 'x')"]);
       const claims = '{"role":"anon"}';
       const out = await s.run([
@@ -62,7 +60,7 @@ describe.skipIf(!haveDatabase)("real PostgreSQL", () => {
   it("reports permission errors as 42501 and applies row level security to the switched role", async () => {
     const s = await make();
     try {
-      await withShim(s);
+      await withTable(s);
       await s.apply([
         "revoke all on public.notes from anon",
         "alter table public.notes enable row level security",
@@ -88,7 +86,7 @@ describe.skipIf(!haveDatabase)("real PostgreSQL", () => {
   it("evaluates row level security before table constraints, which the verdict logic relies on", async () => {
     const s = await make();
     try {
-      await withShim(s);
+      await withTable(s);
       await s.apply(["alter table public.notes enable row level security", "create policy deny on public.notes for insert to authenticated with check (false)"]);
       const claims = '{"role":"authenticated","sub":"aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"}';
       const [denied] = await s.run([{ role: "authenticated", claims, sql: "insert into public.notes (title) values (null)" }]);
@@ -104,7 +102,7 @@ describe.skipIf(!haveDatabase)("real PostgreSQL", () => {
   it("keeps a fork independent of its parent, with the parent's data", async () => {
     const s = await make();
     try {
-      await withShim(s);
+      await withTable(s);
       await s.apply(["insert into public.notes (user_id, title) values ('aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa', 'x')"]);
       const child = await s.fork();
       await child.apply(["delete from public.notes"]);
@@ -135,7 +133,7 @@ describe.skipIf(!haveDatabase)("real PostgreSQL", () => {
   it("reads tables, views, policies, privileges, enums, generated and identity columns from the catalog", async () => {
     const s = await make();
     try {
-      await withShim(s);
+      await withTable(s);
       const statements = [
         "create type public.mood as enum ('calm', 'tense')",
         `create table public.rich (
@@ -164,7 +162,7 @@ describe.skipIf(!haveDatabase)("real PostgreSQL", () => {
       expect(col("id")).toMatchObject({ type: "bigint", primaryKey: true, generated: true });
       expect(col("code")).toMatchObject({ generated: true, hasDefault: false });
       expect(col("seq")).toMatchObject({ generated: false, hasDefault: true });
-      expect(col("mood")).toMatchObject({ type: "mood", enumLabels: ["calm", "tense"], notNull: true, hasDefault: true });
+      expect(col("mood")).toMatchObject({ type: "public.mood", enumLabels: ["calm", "tense"], notNull: true, hasDefault: true });
       expect(col("user_id")?.references).toEqual({ schema: "auth", table: "users", column: "id" });
       expect(col("a")?.unique).toBe(false);
       expect(rich?.checks).toEqual(["CHECK ((a > 0))"]);

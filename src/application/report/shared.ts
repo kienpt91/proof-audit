@@ -3,6 +3,7 @@ import type {
   AuditProofStatus,
   Finding,
   FixStatus,
+  IntegrityViolation,
   SubjectVerificationStatus,
   Tier,
   VerificationStatus,
@@ -301,4 +302,16 @@ export function seedingProblems(report: AnalysisReport) {
 
 export function plural(n: number, one: string, many: string): string {
   return `${n} ${n === 1 ? one : many}`;
+}
+
+export const INTEGRITY_HEADLINE = "INTEGRITY_VIOLATION: do not trust these results";
+
+export const INTEGRITY_EXPLANATION =
+  "The migrations touched, or tried to touch, the test environment that every verdict depends on (the platform functions and roles, the settings that decide how queries are resolved, the tool's own objects). Nothing can be concluded from this run: every table and view is reported as could not be judged, and no fix is proposed.";
+
+/** How a violation reads in a list: what, whether the database allowed it, and where. */
+export function violationParts(v: IntegrityViolation): Part[] {
+  const outcome = v.outcome === "blocked" ? "the database refused it" : v.outcome === "succeeded" ? "the database accepted it" : v.outcome === "state-changed" ? "the environment changed" : "outcome unknown";
+  const where = v.file === null ? "" : [" at ", { input: `${v.file}:${v.line ?? 0}`, code: true } as Part];
+  return [{ input: v.detail }, ` (${v.kind}; ${outcome})`, ...(where === "" ? [] : where)];
 }

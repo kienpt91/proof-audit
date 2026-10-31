@@ -23,8 +23,8 @@ def allowed(argv):
         return "argv must be a list of strings"
     verb = argv[0]
     if verb == "run":
-        if argv[1:4] != ["-d", "--pull", "never"]:
-            return "run must be detached and never pull"
+        if argv[1:5] != ["-d", "--rm", "--pull", "never"]:
+            return "run must be detached, self-removing and never pull"
         if "--network" not in argv or argv[argv.index("--network") + 1] != "none":
             return "run must use --network none"
         if "--read-only" not in argv:
@@ -33,7 +33,16 @@ def allowed(argv):
             return "run uses a forbidden flag"
         return None
     if verb == "exec":
-        return None if len(argv) > 3 and argv[1] == "-i" and NAME.match(argv[2]) and argv[3] == "psql" else "exec is only for psql in a proof-audit container"
+        # exec -i [-e PGOPTIONS=...] <container> psql ...
+        i = 2
+        if len(argv) > 4 and argv[2] == "-e" and argv[3].startswith("PGOPTIONS="):
+            i = 4
+        ok = len(argv) > i + 1 and argv[1] == "-i" and NAME.match(argv[i]) and argv[i + 1] == "psql"
+        return None if ok else "exec is only for psql in a proof-audit container"
+    if verb == "ps":
+        return None if argv[1:4] == ["-a", "--filter", "label=proof-audit=1"] else "ps is only for proof-audit containers"
+    if verb == "context":
+        return None if argv[1] == "inspect" and "--format" in argv else "context is only for inspect"
     if verb in ("inspect", "logs"):
         return None if NAME.match(argv[-1]) else f"{verb} is only for proof-audit containers"
     if verb == "rm":

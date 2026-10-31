@@ -1,0 +1,66 @@
+SECURITY REPORT (plain language)
+================================
+Tool: proof-audit 0.1.0
+Checked: 3 tables or views
+Input files read: 1
+Database used: a throwaway PostgreSQL database (version 16.3, docker image postgres:16.3@sha256:0123456789abcdef)
+Run complete: yes
+Tests run: 6 (0 showed a real problem)
+RESULT: 0 PROVEN, 0 SUSPECTED, 3 INCONCLUSIVE, 0 CLEAN.
+No problem was proven. 3 more need a look: SUSPECTED and INCONCLUSIVE items are NOT proven and carry low confidence.
+
+INTEGRITY_VIOLATION: DO NOT TRUST THESE RESULTS
+-----------------------------------------------
+The migrations touched, or tried to touch, the test environment that every verdict depends on (the platform functions and roles, the settings that decide how queries are resolved, the tool's own objects). Nothing can be concluded from this run: every table and view is reported as could not be judged, and no fix is proposed.
+
+- CREATE FUNCTION auth.uid (redefines-platform-object; the database refused it) at supabase/migrations/001_init.sql:4
+- CREATE EVENT TRIGGER (event-trigger; the database refused it) at supabase/migrations/002_more.sql:12
+- function auth.uid() changed (after the probes) (platform-changed; the environment changed)
+
+WHAT WE FOUND
+-------------
+
+[1] INCONCLUSIVE: NOT proven, the test gave no clear answer
+    Severity: INFO
+    What: Table public.notes could not be judged: the test environment was touched
+    Where: public.notes (table)
+    NOTE: The test could not be completed, so we cannot say whether this is a problem. Treat this as unknown, not as safe.
+    An attacker could: Nothing can be concluded about public.notes: the migrations touched the test environment the results depend on.
+    Could not be tested (no clear answer):
+      - rls:public.notes: the migrations touched the test environment the results depend on (see the integrity section)
+
+[2] INCONCLUSIVE: NOT proven, the test gave no clear answer
+    Severity: INFO
+    What: Table public.orders could not be judged: the test environment was touched
+    Where: public.orders (table)
+    NOTE: The test could not be completed, so we cannot say whether this is a problem. Treat this as unknown, not as safe.
+    An attacker could: Nothing can be concluded about public.orders: the migrations touched the test environment the results depend on.
+    Could not be tested (no clear answer):
+      - rls:public.orders: the migrations touched the test environment the results depend on (see the integrity section)
+
+[3] INCONCLUSIVE: NOT proven, the test gave no clear answer
+    Severity: INFO
+    What: Table public.profiles could not be judged: the test environment was touched
+    Where: public.profiles (table)
+    NOTE: The test could not be completed, so we cannot say whether this is a problem. Treat this as unknown, not as safe.
+    An attacker could: Nothing can be concluded about public.profiles: the migrations touched the test environment the results depend on.
+    Could not be tested (no clear answer):
+      - rls:public.profiles: the migrations touched the test environment the results depend on (see the integrity section)
+
+LOOKED FINE
+-----------
+None.
+
+HOW TO FIX
+----------
+Nothing to fix.
+
+FIX CHECK
+---------
+No fix check was run, so no fix is confirmed.
+
+WHAT WAS NOT CHECKED
+--------------------
+- Storage bucket policies
+- Edge functions and webhooks
+- Anything outside the SQL you gave us

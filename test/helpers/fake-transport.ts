@@ -1,42 +1,52 @@
+import type { SessionSpec, SqlTransport, Step } from "../../src/infrastructure/postgres/transport.js";
 import { modelToCatalog } from "./model-sandbox.js";
-import type { SqlTransport } from "../../src/infrastructure/postgres/transport.js";
 import { model, notes } from "./model.js";
 
 export interface Call {
-  readonly kind: "query" | "execute";
-  readonly database: string;
-  readonly statements: readonly string[];
+  readonly session: SessionSpec;
+  readonly steps: readonly Step[];
 }
 
-/** A transport with canned harness replies, for adapter tests that must not need a database. */
+/** A transport with canned replies, for adapter tests that must not need a database. */
 export class FakeTransport implements SqlTransport {
   readonly calls: Call[] = [];
-  failExecute: RegExp | null = null;
-  failQuery: Error | null = null;
-  replyOverride: ((statement: string) => string | undefined) | null = null;
+  /** Throw for any call that contains a step whose SQL matches. */
+  failOn: RegExp | null = null;
+  failAll: Error | null = null;
+  /** Override the reply for a fetch step (receives the step SQL and the DO block SQL before it). */
+  replyOverride: ((fetchSql: string, blockSql: string) => string | undefined) | null = null;
 
-  async query(database: string, statements: readonly string[]): Promise<string[]> {
-    this.calls.push({ kind: "query", database, statements });
-    if (this.failQuery) throw this.failQuery;
-    return statements.map((s) => this.replyOverride?.(s) ?? this.reply(s));
+  async run(session: SessionSpec, steps: readonly Step[]): Promise<string[]> {
+    this.calls.push({ session, steps });
+    if (this.failAll) throw this.failAll;
+    const out: string[] = [];
+    steps.forEach((step, i) => {
+      if (this.failOn?.test(step.sql)) throw new Error(`step failed: ${step.sql.slice(0, 40)}`);
+      if (step.fetch) out.push(this.replyOverride?.(step.sql, steps[i - 1]?.sql ?? "") ?? this.reply(step.sql, steps[i - 1]?.sql ?? ""));
+    });
+    return out;
   }
 
-  async execute(database: string, statements: readonly string[]): Promise<void> {
-    this.calls.push({ kind: "execute", database, statements });
-    for (const s of statements) if (this.failExecute?.test(s)) throw new Error(`execute failed: ${s.slice(0, 30)}`);
+  private reply(fetchSql: string, blockSql: string): string {
+    if (fetchSql.includes("current_setting('proof_audit.reply'")) {
+      if (blockSql.includes("jsonb_build_object('ok', true, 'rows', n)")) return '{"ok": true, "rows": 1}';
+      if (blockSql.includes("'attempt'") || blockSql.includes('"attempt"')) return '{"ok": true, "attempt": 0}';
+      if (blockSql.includes("'value', v")) return '{"ok": true, "value": "1"}';
+      return '{"ok": true}';
+    }
+    if (fetchSql.includes("jsonb_agg(tj")) return JSON.stringify(modelToCatalog(model([notes()])));
+    if (fetchSql.includes("'entries'")) return JSON.stringify({ entries: [{ key: "role anon", value: "super=false" }] });
+    if (fetchSql.includes("is_superuser")) return "on";
+    throw new Error(`FakeTransport does not know ${fetchSql.slice(0, 60)}`);
   }
 
-  private reply(statement: string): string {
-    if (statement.includes("proof_audit.try_exec(")) return '{"ok": true}';
-    if (statement.includes("proof_audit.try_first(")) return '{"ok": true, "attempt": 0}';
-    if (statement.includes("proof_audit.scalar(")) return '{"ok": true, "value": "1"}';
-    if (statement.includes("proof_audit.run_probe(")) return '{"ok": true, "rows": 1}';
-    if (statement.includes("proof_audit.catalog()")) return JSON.stringify(modelToCatalog(model([notes()])));
-    if (statement.includes("is_superuser")) return "on";
-    throw new Error(`FakeTransport does not know ${statement}`);
+  /** Every SQL string sent, in order. */
+  get sent(): string[] {
+    return this.calls.flatMap((c) => c.steps.map((s) => s.sql));
   }
 
-  get executed(): string[] {
-    return this.calls.filter((c) => c.kind === "execute").flatMap((c) => [...c.statements]);
+  /** The calls made as one principal. */
+  by(principal: SessionSpec["principal"]): Call[] {
+    return this.calls.filter((c) => c.session.principal === principal);
   }
 }

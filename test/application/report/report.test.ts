@@ -12,6 +12,7 @@ import {
   fixedReport,
   proof,
   hostileReport,
+  integrityReport,
   hostileTwin,
   verifiedReport,
   vulnerableReport,
@@ -36,6 +37,7 @@ const FIXTURES: readonly (readonly [string, () => AnalysisReport])[] = [
   ["verified", verifiedReport],
   ["breaks-access", breaksAccessReport],
   ["hostile", hostileReport],
+  ["integrity", integrityReport],
 ];
 
 const FORBIDDEN_PLAIN = /[\u0000-\u0009\u000B-\u001F\u007F-\u009F\u00AD\u061C\u180E\u200B-\u200F\u2028-\u202E\u2060-\u206F\uFEFF\uFFFE\uFFFF\u{E0000}-\u{E007F}]|[\uD800-\uDFFF]/u;
@@ -314,7 +316,7 @@ describe("json report", () => {
 
   it("orders the top-level keys as documented", () => {
     expect(Object.keys(JSON.parse(json) as object)).toEqual([
-      "tool", "inputs", "environment", "complete", "summary", "findings", "proofs", "seeding", "fix", "verification", "audit", "migrationErrors", "warnings", "notChecked",
+      "tool", "inputs", "environment", "complete", "integrity", "summary", "findings", "proofs", "seeding", "fix", "verification", "audit", "migrationErrors", "warnings", "notChecked",
     ]);
   });
 
@@ -656,5 +658,35 @@ describe("wording of proof results and fix lines", () => {
       reason: "x",
     });
     expect(renderPlain(withProofs(one))).toContain("returned 1 row (1 row seeded for this test)");
+  });
+});
+
+describe("integrity violation in the reports", () => {
+  const plain = renderPlain(integrityReport());
+  const markdown = renderMarkdown(integrityReport());
+
+  it("says so in the first screen, in plain language, and lists every violation with whether the database allowed it", () => {
+    expect(plain).toContain("INTEGRITY_VIOLATION: DO NOT TRUST THESE RESULTS");
+    expect(plain).toContain("CREATE FUNCTION auth.uid (redefines-platform-object; the database refused it) at supabase/migrations/001_init.sql:4");
+    expect(plain).toContain("function auth.uid() changed (after the probes) (platform-changed; the environment changed)");
+    expect(markdown).toContain("## INTEGRITY\\_VIOLATION\\: do not trust these results");
+  });
+
+  it("shows every table as could not be judged and never proven or clean", () => {
+    expect(plain).toContain("0 PROVEN, 0 SUSPECTED, 3 INCONCLUSIVE, 0 CLEAN");
+    expect(plain).not.toContain("refused every attack");
+    expect(plain).toContain("No fix check was run");
+  });
+
+  it("is absent from a report whose environment is intact", () => {
+    for (const out of [renderPlain(fixedReport()), renderMarkdown(fixedReport())]) expect(out).not.toContain("INTEGRITY");
+  });
+
+  it("escapes hostile text in the detail and the file", () => {
+    const base = integrityReport();
+    const hostile = { ...base, integrity: { status: "INTEGRITY_VIOLATION" as const, violations: [{ kind: "event-trigger" as const, detail: "\u001b[31m\u202eevil|`x`", file: "a\nb<script>.sql", line: 1, outcome: "unknown" as const }] } };
+    expect(renderPlain(hostile)).not.toMatch(FORBIDDEN_PLAIN);
+    expect(renderMarkdown(hostile)).not.toMatch(FORBIDDEN_MARKDOWN);
+    expect(JSON.parse(renderJson(hostile)).integrity.status).toBe("INTEGRITY_VIOLATION");
   });
 });

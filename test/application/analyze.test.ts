@@ -69,11 +69,17 @@ describe("analyzeRls on a vulnerable schema", () => {
     expect(report.verification?.after.every((p) => p.phase === "after")).toBe(true);
   });
 
-  it("applies the shim, then the migrations, then the users", async () => {
+  it("applies the migrations, then the synthetic users, and nothing else from the platform", async () => {
     const { sandbox } = await run(options);
-    expect(sandbox.applied[0]).toContain("CREATE ROLE anon");
-    expect(sandbox.applied.some((s) => s.startsWith("create table public.notes"))).toBe(true);
-    expect(sandbox.applied.some((s) => s.startsWith("INSERT INTO auth.users"))).toBe(true);
+    expect(sandbox.applied[0]?.startsWith("create table public.notes")).toBe(true);
+    const users = sandbox.applied.findIndex((s) => s.startsWith("INSERT INTO auth.users"));
+    expect(users).toBeGreaterThan(0);
+    expect(sandbox.applied.some((s) => s.includes("CREATE ROLE"))).toBe(false);
+  });
+
+  it("reports an intact environment when nothing touched it", async () => {
+    const { report } = await run(options);
+    expect(report.integrity).toEqual({ status: "INTACT", violations: [] });
   });
 
   it("destroys the sandbox and is deterministic", async () => {
@@ -179,8 +185,9 @@ describe("analyzeRls robustness", () => {
     expect(sandbox.disposed).toBe(true);
   });
 
-  it("fails clearly when the compatibility layer cannot be set up", async () => {
-    const sandbox = new ModelSandbox({ model: model([good]), rejectStatement: /CREATE ROLE/ });
+  it("fails clearly when the platform fingerprint cannot be read, and destroys the sandbox", async () => {
+    const sandbox = new ModelSandbox({ model: model([good]) });
+    sandbox.fingerprint = async () => ({ nonsense: true });
     await expect(analyzeRls(request(), { provider: providerFor(sandbox), clock })).rejects.toBeInstanceOf(SandboxError);
     expect(sandbox.disposed).toBe(true);
   });
@@ -214,5 +221,63 @@ describe("analyzeRls with a static audit report", () => {
     expect(report.audit?.findings.some((f) => f.proofStatus === "PROVEN")).toBe(true);
     expect(report.audit?.findings.some((f) => f.proofStatus === "STATIC_ONLY")).toBe(true);
     expect(report.audit?.outOfScope).toBeGreaterThan(0);
+  });
+});
+
+describe("analyzeRls: the migrations touch the test environment", () => {
+  const redefine = "create or replace function auth.uid() returns uuid language sql as $$ select null::uuid $$;\n";
+  const withMigration = (content: string): Partial<AnalyzeRequest> => ({ files: [{ path: "m/001.sql", content: `${content}create table public.notes (id uuid primary key, user_id uuid);\n`, bytes: 100 }] });
+
+  it("reports a refused attempt, quarantines every finding and proposes no fix, while the proofs keep what was observed", async () => {
+    const { report } = await run({ model: model([open]), fixed: model([good]), rejectStatement: /auth\.uid/ }, withMigration(redefine));
+    expect(report.integrity.status).toBe("INTEGRITY_VIOLATION");
+    expect(report.integrity.violations).toEqual([{ kind: "redefines-platform-object", detail: "CREATE FUNCTION auth.uid", file: "m/001.sql", line: 1, outcome: "blocked" }]);
+    expect(report.findings.map((f) => f.tier)).toEqual(["INCONCLUSIVE"]);
+    expect(report.findings[0]?.inconclusive[0]?.reason).toContain("integrity");
+    expect(report.summary).toMatchObject({ proven: 0, clean: 0, inconclusive: 1 });
+    expect(report.fix).toBeNull();
+    expect(report.verification).toBeNull();
+    expect(report.proofs.some((p) => p.verdict === "PROVEN_VULNERABLE")).toBe(true);
+  });
+
+  it("marks an attempt the database accepted as succeeded", async () => {
+    const { report } = await run({ model: model([good]) }, withMigration(redefine));
+    expect(report.integrity.violations[0]).toMatchObject({ kind: "redefines-platform-object", outcome: "succeeded" });
+  });
+
+  it("finds attempts hidden in a DO block", async () => {
+    const { report } = await run({ model: model([good]) }, withMigration("do $$ begin execute 'alter database postgres set search_path = evil'; end $$;\n"));
+    expect(report.integrity.violations.map((v) => v.kind)).toEqual(["alters-protected-setting"]);
+  });
+
+  it.each([
+    [2, "after the migrations"],
+    [3, "after the probes"],
+  ])("detects a change of the platform noticed on fingerprint read %i (%s)", async (call, when) => {
+    const { report } = await run({ model: model([open]), fixed: model([good]), tamperedAfter: call });
+    expect(report.integrity.status).toBe("INTEGRITY_VIOLATION");
+    expect(report.integrity.violations.map((v) => v.detail)).toContain(`event trigger evil appeared (${when})`);
+    expect(report.findings.every((f) => f.tier === "INCONCLUSIVE")).toBe(true);
+    expect(report.fix).toBeNull();
+  });
+
+  it("detects a change noticed only on the copy used to verify the fix, and withdraws the fix", async () => {
+    const sandbox = new ModelSandbox({ model: model([open]), fixed: model([good]) });
+    const fork = sandbox.fork.bind(sandbox);
+    sandbox.fork = async () => {
+      const copy = (await fork()) as ModelSandbox;
+      copy.fingerprint = async () => ({ entries: [{ key: "role anon", value: "super=true" }] });
+      return copy;
+    };
+    const report = await analyzeRls(request(), { provider: providerFor(sandbox), clock });
+    expect(report.integrity.violations.map((v) => v.detail)).toContain("function auth.uid() was removed (after the fix probes)");
+    expect(report.fix).toBeNull();
+    expect(report.verification).toBeNull();
+    expect(report.findings.every((f) => f.tier === "INCONCLUSIVE")).toBe(true);
+  });
+
+  it("does not let a sandbox that reports tampering produce a CLEAN verdict", async () => {
+    const { report } = await run({ model: model([good]), tamperedAfter: 2 });
+    expect(report.findings.some((f) => f.tier === "CLEAN")).toBe(false);
   });
 });

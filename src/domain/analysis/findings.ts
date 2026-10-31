@@ -91,8 +91,25 @@ function sentenceFor(tier: Tier, subject: string, proven: readonly ProbeKind[]):
   }
 }
 
+/** What a finding becomes when the run's integrity is in doubt: nothing proven, nothing cleared. */
+function quarantined(f: Finding, reason: string): Finding {
+  return {
+    ...f,
+    tier: "INCONCLUSIVE",
+    severity: "info",
+    title: `${f.subjectKind === "view" ? "View" : "Table"} ${f.subject} could not be judged: the test environment was touched`,
+    attackerCan: `Nothing can be concluded about ${f.subject}: the migrations touched the test environment the results depend on, so neither a problem nor its absence can be trusted (see the integrity section).`,
+    causes: [],
+    provenBy: [],
+    notReproduced: [],
+    inconclusive: [{ id: f.id, reason }],
+    fixStatus: "not-needed",
+    fixNote: "No fix is proposed while the results cannot be trusted.",
+  };
+}
+
 /** Findings for every table and view the proofs cover, ordered PROVEN first, then by severity, then name. */
-export function buildFindings(model: SchemaModel, proofs: readonly Proof[], priority: readonly string[] = []): readonly Finding[] {
+export function buildFindings(model: SchemaModel, proofs: readonly Proof[], priority: readonly string[] = [], quarantine: string | null = null): readonly Finding[] {
   const rank = (subject: string): number => { const i = priority.indexOf(subject); return i === -1 ? Number.MAX_SAFE_INTEGER : i; };
   const bySubject = new Map<string, Proof[]>();
   for (const p of proofs) bySubject.set(p.subject, [...(bySubject.get(p.subject) ?? []), p]);
@@ -123,6 +140,7 @@ export function buildFindings(model: SchemaModel, proofs: readonly Proof[], prio
       fixNote: tier === "PROVEN" ? "No fix has been proposed yet." : "Nothing to fix from what was proven.",
     });
   }
+  const sealed = quarantine === null ? out : out.map((f) => quarantined(f, quarantine));
   const tierRank: Record<Tier, number> = { PROVEN: 0, SUSPECTED: 1, INCONCLUSIVE: 2, CLEAN: 3 };
-  return out.sort((a, b) => tierRank[a.tier] - tierRank[b.tier] || SEVERITY_RANK[b.severity] - SEVERITY_RANK[a.severity] || Math.sign(rank(a.subject) - rank(b.subject)) || (a.subject < b.subject ? -1 : a.subject > b.subject ? 1 : 0));
+  return sealed.sort((a, b) => tierRank[a.tier] - tierRank[b.tier] || SEVERITY_RANK[b.severity] - SEVERITY_RANK[a.severity] || Math.sign(rank(a.subject) - rank(b.subject)) || (a.subject < b.subject ? -1 : a.subject > b.subject ? 1 : 0));
 }

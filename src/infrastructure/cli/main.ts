@@ -1,4 +1,4 @@
-import { isAbsolute, join } from "node:path";
+import { isAbsolute, join, relative, resolve } from "node:path";
 import { analyzeRls } from "../../application/analyze.js";
 import type { Clock, LoadedFile, LoadedFiles, SandboxProvider } from "../../application/ports.js";
 import { renderJson } from "../../application/report/json.js";
@@ -13,7 +13,7 @@ import { LIMITS } from "../../domain/limits.js";
 import { parseLoopbackUrl, type LoopbackEndpoint } from "../../domain/safety/loopback.js";
 import { terminalText } from "../../domain/text/sanitize.js";
 import { displayPath, InputError } from "../fs/files.js";
-import { parseArgs, USAGE, type Command } from "./args.js";
+import { parseArgs, USAGE, type Command, type DatabaseChoice } from "./args.js";
 
 export interface TrackedProvider extends SandboxProvider {
   disposeAll(): Promise<void>;
@@ -30,7 +30,7 @@ export interface CliDeps {
   /** The throwaway-container provider. */
   readonly dockerProvider: () => TrackedProvider;
   /** A provider for a Postgres server on this machine's loopback interface; only ever called with a validated endpoint. */
-  readonly urlProvider: (endpoint: LoopbackEndpoint) => TrackedProvider;
+  readonly urlProvider: (endpoint: LoopbackEndpoint, options: { readonly yesThisIsThrowaway: boolean }) => TrackedProvider;
   readonly stdout: (text: string) => void;
   readonly stderr: (text: string) => void;
 }
@@ -41,10 +41,19 @@ function message(e: unknown): string {
   return terminalText(e instanceof Error ? e.message : "unknown error", 400);
 }
 
-function providerFor(url: string | null, deps: CliDeps): TrackedProvider | string {
-  if (url === null) return deps.dockerProvider();
-  const endpoint = parseLoopbackUrl(url);
-  return endpoint.ok ? deps.urlProvider(endpoint.value) : endpoint.error;
+function providerFor(database: DatabaseChoice, deps: CliDeps): TrackedProvider | string {
+  if (database.kind === "container") return deps.dockerProvider();
+  const endpoint = parseLoopbackUrl(database.url);
+  if (!endpoint.ok) return endpoint.error;
+  const { host, port, database: name, password } = endpoint.value;
+  deps.stderr(
+    `${TOOL}: using the PostgreSQL server at ${host === "::1" ? "[::1]" : host}:${port} (database ${terminalText(name, 60)}) instead of a throwaway container. ` +
+      `It must be a server you started for testing: a database and two roles are created in it for this run and removed afterwards.\n`,
+  );
+  if (password !== null && database.fromEnv === null) {
+    deps.stderr(`${TOOL}: warning: the password in --database-url is visible to other users of this machine in the process list; use --database-url-env instead\n`);
+  }
+  return deps.urlProvider(endpoint.value, { yesThisIsThrowaway: database.yesThisIsThrowaway });
 }
 
 function artifacts(report: AnalysisReport, command: Extract<Command, { kind: "rls" }>, out: string, deps: CliDeps): Record<string, string> {
@@ -69,7 +78,7 @@ function artifacts(report: AnalysisReport, command: Extract<Command, { kind: "rl
 }
 
 async function runRls(command: Extract<Command, { kind: "rls" }>, deps: CliDeps): Promise<number> {
-  const provider = providerFor(command.databaseUrl, deps);
+  const provider = providerFor(command.database, deps);
   if (typeof provider === "string") {
     deps.stderr(`${TOOL}: ${provider}\n`);
     return 2;
@@ -113,12 +122,13 @@ async function runRls(command: Extract<Command, { kind: "rls" }>, deps: CliDeps)
       return 2;
     }
   }
+  if (report.integrity.status === "INTEGRITY_VIOLATION") return 4;
   if (command.failOn === "proven" && report.summary.proven > 0) return 1;
   return report.complete ? 0 : 3;
 }
 
 async function runVerify(command: Extract<Command, { kind: "verify" }>, deps: CliDeps): Promise<number> {
-  const provider = providerFor(command.databaseUrl, deps);
+  const provider = providerFor(command.database, deps);
   if (typeof provider === "string") {
     deps.stderr(`${TOOL}: ${provider}\n`);
     return 2;
@@ -134,8 +144,12 @@ async function runVerify(command: Extract<Command, { kind: "verify" }>, deps: Cl
   }
   const root = command.root ?? deps.cwd;
   const readInput = async (path: string): Promise<LoadedFile | null> => {
+    // A recorded path is only ever read from inside --root: no `..` and no absolute path that leaves it.
+    const target = isAbsolute(path) ? path : join(root, path);
+    const inside = relative(resolve(root), resolve(target));
+    if (inside === "" || inside.startsWith("..") || isAbsolute(inside)) return null;
     try {
-      const text = await deps.readText(isAbsolute(path) ? path : join(root, path), LIMITS.maxSqlFileBytes);
+      const text = await deps.readText(target, LIMITS.maxSqlFileBytes);
       return { path, content: text, bytes: Buffer.byteLength(text, "utf8") };
     } catch (e) {
       if (e instanceof InputError) return null;
@@ -146,7 +160,7 @@ async function runVerify(command: Extract<Command, { kind: "verify" }>, deps: Cl
     const result = await verifyEvidence({ proofsText, readInput, against }, { provider, clock: deps.clock });
     const head = result.status === "ok" ? "OK" : result.status.toUpperCase();
     deps.stdout(`${head}: ${result.probesChecked} probes replayed\n${result.messages.map((m) => `  ${terminalText(m, 400)}`).join("\n")}\n`);
-    return result.status === "ok" ? 0 : result.status === "mismatch" ? 1 : result.status === "invalid" ? 2 : 3;
+    return result.status === "ok" ? 0 : result.status === "mismatch" ? 1 : result.status === "invalid" ? 2 : result.status === "integrity" ? 4 : 3;
   } catch (e) {
     deps.stderr(`${TOOL}: ${message(e)}\n`);
     return 3;

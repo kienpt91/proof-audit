@@ -4,6 +4,7 @@ import { decodeContract } from "../../src/domain/evidence/contract.js";
 import type { LoopbackEndpoint } from "../../src/domain/safety/loopback.js";
 import { runCli, type CliDeps, type TrackedProvider } from "../../src/infrastructure/cli/main.js";
 import { InputError } from "../../src/infrastructure/fs/files.js";
+import { SandboxError } from "../../src/application/ports.js";
 import { ALL, model, notes } from "../helpers/model.js";
 import { ModelSandbox, type ModelSandboxOptions } from "../helpers/model-sandbox.js";
 import { readFileSync } from "node:fs";
@@ -141,9 +142,10 @@ describe("proof-audit rls", () => {
     const h = harness(clean);
     expect(await run(h, "rls", "nowhere")).toBe(2);
     expect(stderr(h)).toContain("no such file");
-    const broken = harness({ model: model([notes()]), rejectStatement: /CREATE ROLE/ });
+    const broken = harness(clean);
+    broken.deps = { ...broken.deps, dockerProvider: () => ({ create: async () => { throw new SandboxError("the database container did not become ready in time"); }, disposeAll: async () => undefined }) };
     expect(await run(broken, "rls", "supabase/migrations")).toBe(3);
-    expect(stderr(broken)).toContain("compatibility layer");
+    expect(stderr(broken)).toContain("did not become ready");
   });
 
   it("exits 2 with usage for bad arguments", async () => {
@@ -184,11 +186,47 @@ describe("loopback enforcement", () => {
     expect(h.sandboxes).toHaveLength(0);
   });
 
-  it("refuses a remote URL from the environment as well", async () => {
+  it("refuses a remote URL named through --database-url-env as well", async () => {
     const h = harness(clean);
-    h.deps = { ...h.deps, env: { PROOF_AUDIT_DATABASE_URL: "postgres://u@10.0.0.5/app" } };
-    expect(await run(h, "rls", "supabase/migrations")).toBe(2);
+    h.deps = { ...h.deps, env: { MY_URL: "postgres://u@10.0.0.5/app" } };
+    expect(await run(h, "rls", "supabase/migrations", "--database-url-env", "MY_URL")).toBe(2);
     expect(h.endpoints).toHaveLength(0);
+  });
+
+  it("never switches to a server because of an environment variable", async () => {
+    const h = harness(clean);
+    h.deps = { ...h.deps, env: { PROOF_AUDIT_DATABASE_URL: "postgres://u@127.0.0.1/app" } };
+    expect(await run(h, "rls", "supabase/migrations")).toBe(0);
+    expect(h.endpoints).toHaveLength(0);
+    expect(h.dockerCalls).toBe(1);
+  });
+
+  it("says on stderr which server it is using, and why it must be a throwaway", async () => {
+    const h = harness(clean);
+    await run(h, "rls", "supabase/migrations", "--database-url", "postgres://tester@localhost:55432/scratch");
+    expect(stderr(h)).toContain("using the PostgreSQL server at 127.0.0.1:55432 (database scratch) instead of a throwaway container");
+    expect(stderr(h)).toContain("must be a server you started for testing");
+  });
+
+  it("warns that a password in --database-url shows in the process list, but not for --database-url-env", async () => {
+    const withPassword = "postgres://tester:" + "pw12" + "@127.0.0.1:55432/scratch";
+    const a = harness(clean);
+    await run(a, "rls", "supabase/migrations", "--database-url", withPassword);
+    expect(stderr(a)).toContain("visible to other users of this machine");
+    const b = harness(clean);
+    b.deps = { ...b.deps, env: { U: withPassword } };
+    await run(b, "rls", "supabase/migrations", "--database-url-env", "U");
+    expect(stderr(b)).not.toContain("visible to other users");
+    expect(stderr(a) + stderr(b)).not.toContain("pw12");
+  });
+
+  it("passes --yes-this-is-throwaway to the provider", async () => {
+    const h = harness(clean);
+    const seen: boolean[] = [];
+    h.deps = { ...h.deps, urlProvider: (_e, options) => { seen.push(options.yesThisIsThrowaway); return h.deps.dockerProvider(); } };
+    await run(h, "rls", "supabase/migrations", "--database-url", "postgres://u@127.0.0.1/d", "--yes-this-is-throwaway");
+    await run(h, "rls", "supabase/migrations", "--database-url", "postgres://u@127.0.0.1/d");
+    expect(seen).toEqual([true, false]);
   });
 
   it("hands a validated loopback endpoint to the URL provider and never starts a container", async () => {
@@ -202,6 +240,30 @@ describe("loopback enforcement", () => {
     const h = harness(clean, { "p.jsonl": "" });
     expect(await run(h, "verify", "p.jsonl", "--database-url", "postgres://u@example.org/db")).toBe(2);
     expect(h.endpoints).toHaveLength(0);
+  });
+});
+
+describe("integrity violation", () => {
+  const hostile = `create or replace function auth.uid() returns uuid language sql as $$ select null::uuid $$;\n${SQL}`;
+
+  it("exits 4 and says so in every format, even when something else was proven", async () => {
+    const h = harness({ ...vulnerable, rejectStatement: /auth\.uid/ }, { "m/001.sql": hostile });
+    expect(await run(h, "rls", "m")).toBe(4);
+    expect(stdout(h)).toContain("INTEGRITY_VIOLATION: DO NOT TRUST THESE RESULTS");
+    const j = harness(vulnerable, { "m/001.sql": hostile });
+    expect(await run(j, "rls", "m", "--json")).toBe(4);
+    expect(JSON.parse(stdout(j)).integrity.status).toBe("INTEGRITY_VIOLATION");
+  });
+
+  it("overrides --fail-on none, because the results cannot be trusted", async () => {
+    const h = harness(clean, { "m/001.sql": hostile });
+    expect(await run(h, "rls", "m", "--fail-on", "none")).toBe(4);
+  });
+
+  it("writes no fix.sql for a quarantined run", async () => {
+    const h = harness(vulnerable, { "m/001.sql": hostile });
+    await run(h, "rls", "m", "--out", "o");
+    expect("fix.sql" in (h.written.get("o") ?? {})).toBe(false);
   });
 });
 
@@ -240,6 +302,23 @@ describe("proof-audit verify", () => {
     h.files.set("supabase/migrations/001.sql", `${SQL}-- edited\n`);
     expect(await run(h, "verify", "out/proofs.jsonl")).toBe(3);
     expect(stdout(h)).toContain("STALE");
+  });
+
+  it("exits 4 when the replay finds the platform touched", async () => {
+    const h = await recorded();
+    const tampered = harness({ ...vulnerable, tamperedAfter: 3 }, { "supabase/migrations/001.sql": SQL, "out/proofs.jsonl": h.files.get("out/proofs.jsonl") ?? "" });
+    expect(await run(tampered, "verify", "out/proofs.jsonl")).toBe(4);
+  });
+
+  it("never reads a recorded input from outside --root: no .., no absolute path elsewhere", async () => {
+    const h = await recorded();
+    const text = (h.files.get("out/proofs.jsonl") ?? "").replace("supabase/migrations/001.sql", "/etc/passwd");
+    h.files.set("abs.jsonl", text);
+    h.files.set("/etc/passwd", "root:x:0:0");
+    expect(await run(h, "verify", "abs.jsonl")).toBe(3);
+    expect(stdout(h)).toContain("outside --root");
+    h.files.set("dots.jsonl", (h.files.get("out/proofs.jsonl") ?? "").replace("supabase/migrations/001.sql", "../outside.sql"));
+    expect(await run(h, "verify", "dots.jsonl")).toBe(2);
   });
 
   it("exits 2 for damaged evidence and for a missing file", async () => {

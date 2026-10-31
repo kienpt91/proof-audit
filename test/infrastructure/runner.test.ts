@@ -56,13 +56,15 @@ describe("SpawnDockerRunner", () => {
   });
 });
 
+const ACCOUNTS = { admin: { user: "a", password: null }, migrator: { user: "m", password: null }, prober: { user: "p", password: null } };
+
 describe("PgTransport", () => {
   it("refuses to be built for a host that is not loopback", () => {
-    expect(() => new PgTransport({ host: "db.example.com", port: 5432, user: "u", password: null, database: "d" })).toThrow("loopback");
+    expect(() => new PgTransport({ host: "db.example.com", port: 5432, user: "u", password: null, database: "d" }, ACCOUNTS)).toThrow("loopback");
   });
 
   it("accepts loopback hosts", () => {
-    expect(() => new PgTransport({ host: "127.0.0.1", port: 5432, user: "u", password: null, database: "d" })).not.toThrow();
-    expect(() => new PgTransport({ host: "::1", port: 5432, user: "u", password: null, database: "d" })).not.toThrow();
+    expect(() => new PgTransport({ host: "127.0.0.1", port: 5432, user: "u", password: null, database: "d" }, ACCOUNTS)).not.toThrow();
+    expect(() => new PgTransport({ host: "::1", port: 5432, user: "u", password: null, database: "d" }, ACCOUNTS)).not.toThrow();
   });
 });

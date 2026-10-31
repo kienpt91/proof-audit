@@ -11,7 +11,9 @@ import { planProbes } from "../domain/proof/plan.js";
 import { qualifiedKey, type SchemaModel, type Table } from "../domain/schema/model.js";
 import { parseMigrations } from "../domain/sql/parser.js";
 import { NOT_CHECKED } from "./not-checked.js";
-import { prepareSandbox } from "./prepare.js";
+import { checkPlatform, prepareSandbox } from "./prepare.js";
+import { assessIntegrity } from "../domain/integrity/assess.js";
+import type { IntegrityViolation } from "../domain/analysis/types.js";
 import { runProbes } from "./probes.js";
 import type { Clock, LoadedFile, SandboxProvider } from "./ports.js";
 
@@ -62,17 +64,22 @@ export async function analyzeRls(request: AnalyzeRequest, deps: AnalyzeDeps): Pr
 
     const missing = missingFromDatabase(parsed.model, prepared.model);
     const findingModel: SchemaModel = { tables: [...prepared.model.tables, ...missing], views: prepared.model.views };
-    let findings: readonly Finding[] = buildFindings(findingModel, before.proofs, priority).map((f) => {
-      if (!missing.some((t) => qualifiedKey(t.name) === f.subject)) return f;
-      const reason = "the table could not be created in the test database (see the rejected migration statements), so nothing could be probed";
-      return { ...f, inconclusive: [{ id: f.subject, reason }] };
-    });
+    const changes: IntegrityViolation[] = [...prepared.platformChanges, ...(await checkPlatform(created.sandbox, prepared.baseline, "after the probes"))];
+    let integrity = assessIntegrity(prepared.attempts, prepared.outcomes, changes);
+    const quarantineReason = "the migrations touched the test environment the results depend on (see the integrity section)";
+    const judge = (): readonly Finding[] =>
+      buildFindings(findingModel, before.proofs, priority, integrity.status === "INTACT" ? null : quarantineReason).map((f) => {
+        if (!missing.some((t) => qualifiedKey(t.name) === f.subject)) return f;
+        const reason = "the table could not be created in the test database (see the rejected migration statements), so nothing could be probed";
+        return { ...f, inconclusive: [{ id: f.subject, reason }] };
+      });
+    let findings: readonly Finding[] = judge();
     for (const t of missing) warnings.push(`The migrations declare ${qualifiedKey(t.name)} but the test database does not have it.`);
 
     let fix: AnalysisReport["fix"] = null;
     let verification: AnalysisReport["verification"] = null;
     let timedOut = before.timedOut;
-    if (request.proposeFix && findings.some((f) => f.tier === "PROVEN")) {
+    if (request.proposeFix && integrity.status === "INTACT" && findings.some((f) => f.tier === "PROVEN")) {
       fix = generateFix(prepared.model, findings);
       const copy = await created.sandbox.fork();
       try {
@@ -80,11 +87,18 @@ export async function analyzeRls(request: AnalyzeRequest, deps: AnalyzeDeps): Pr
         const applyErrors = applied.flatMap((o, i) => (o.ok ? [] : [{ statement: fix?.statements[i] ?? "", sqlstate: o.sqlstate ?? "?????", message: o.message ?? "" }]));
         const after = await runProbes(copy, probes, "after", budget);
         timedOut = timedOut || after.timedOut;
+        changes.push(...(await checkPlatform(copy, prepared.baseline, "after the fix probes")));
         verification = verifyFix(before.proofs, after.proofs, fix, applyErrors);
       } finally {
         await copy.dispose();
       }
-      findings = applyFixOutcome(findings, fix, verification);
+      integrity = assessIntegrity(prepared.attempts, prepared.outcomes, changes);
+      if (integrity.status === "INTACT") findings = applyFixOutcome(findings, fix, verification);
+      else {
+        findings = judge();
+        fix = null;
+        verification = null;
+      }
     }
 
     const seeding: SeedTableResult[] = [...prepared.seeding].sort((a, b) => (a.table < b.table ? -1 : 1));
@@ -101,6 +115,7 @@ export async function analyzeRls(request: AnalyzeRequest, deps: AnalyzeDeps): Pr
       inputs: inputRecords(request.files),
       environment: { ...created.environment, postgresVersion: prepared.serverVersion },
       complete: request.inputsComplete && parsed.complete && !prepared.truncated && !timedOut,
+      integrity,
       summary: {
         subjects: findings.length,
         proven,

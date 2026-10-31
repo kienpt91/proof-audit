@@ -6,6 +6,7 @@ const TOP_LEVEL_ORDER = [
   "inputs",
   "environment",
   "complete",
+  "integrity",
   "summary",
   "findings",
   "proofs",

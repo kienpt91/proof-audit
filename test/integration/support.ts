@@ -29,6 +29,6 @@ export async function exampleFiles(app: "vulnerable-app" | "fixed-app"): Promise
 export function analyze(files: readonly LoadedFile[], over: Partial<AnalyzeRequest> = {}, statementTimeoutMs?: number): Promise<AnalysisReport> {
   return analyzeRls(
     { files, loadWarnings: [], inputsComplete: true, audit: null, proposeFix: true, tool, ...over },
-    { provider: new UrlSandboxProvider(endpoint(), statementTimeoutMs), clock },
+    { provider: new UrlSandboxProvider(endpoint(), { ...(statementTimeoutMs === undefined ? {} : { statementTimeoutMs }) }), clock },
   );
 }

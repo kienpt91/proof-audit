@@ -11,6 +11,8 @@ import {
   fixIsConfirmed,
   fixLine,
   headlineCounts,
+  INTEGRITY_EXPLANATION,
+  INTEGRITY_HEADLINE,
   narrateProof,
   nonClean,
   plural,
@@ -22,6 +24,7 @@ import {
   subjectCheckWords,
   tierCaveat,
   tierHeadline,
+  violationParts,
 } from "./shared.js";
 
 /**
@@ -139,6 +142,13 @@ export function renderMarkdown(report: AnalysisReport): string {
 
   out.push("", "## Result", "");
   out.push(`**${headlineCounts(report)}**`, "", resultParagraph(report));
+
+  if (report.integrity.status === "INTEGRITY_VIOLATION") {
+    out.push("", `## ${escapeMarkdown(INTEGRITY_HEADLINE)}`, "", escapeMarkdown(INTEGRITY_EXPLANATION), "");
+    for (const v of report.integrity.violations.slice(0, LIMITS.warnings)) out.push(`- ${prose(violationParts(v))}`);
+    const more = report.integrity.violations.length - LIMITS.warnings;
+    if (more > 0) out.push(`- ... and ${more} more.`);
+  }
 
   out.push("", "## What we found");
   const problems = nonClean(report.findings);

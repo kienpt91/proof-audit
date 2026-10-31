@@ -179,6 +179,7 @@ export interface AnalysisReport {
   readonly environment: Environment;
   /** False when a cap was hit or the sandbox could not run everything: results may be partial. */
   readonly complete: boolean;
+  readonly integrity: IntegrityReport;
   readonly summary: AnalysisSummary;
   /** Ordered: tier (PROVEN first), severity, then name. */
   readonly findings: readonly Finding[];

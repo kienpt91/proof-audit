@@ -97,6 +97,7 @@ function baseReport(over: Partial<AnalysisReport> & Pick<AnalysisReport, "summar
     inputs: [{ path: "supabase/migrations/001_init.sql", sha256: SHA_A, bytes: 1204 }],
     environment: { mode: "docker", image: "postgres:16.3@sha256:0123456789abcdef", postgresVersion: "16.3" },
     complete: true,
+    integrity: { status: "INTACT", violations: [] },
     seeding: [],
     fix: null,
     verification: null,
@@ -559,6 +560,38 @@ export function breaksAccessReport(): AnalysisReport {
   });
 }
 
+/** (f) The migrations tried to redefine auth.uid() and touched the platform: nothing can be trusted, every finding is INCONCLUSIVE. */
+export function integrityReport(): AnalysisReport {
+  const fixed = fixedReport();
+  return {
+    ...fixed,
+    integrity: {
+      status: "INTEGRITY_VIOLATION",
+      violations: [
+        { kind: "redefines-platform-object", detail: "CREATE FUNCTION auth.uid", file: "supabase/migrations/001_init.sql", line: 4, outcome: "blocked" },
+        { kind: "event-trigger", detail: "CREATE EVENT TRIGGER", file: "supabase/migrations/002_more.sql", line: 12, outcome: "blocked" },
+        { kind: "platform-changed", detail: "function auth.uid() changed (after the probes)", file: null, line: null, outcome: "state-changed" },
+      ],
+    },
+    summary: { ...fixed.summary, proven: 0, clean: 0, inconclusive: fixed.findings.length },
+    findings: fixed.findings.map((f) => ({
+      ...f,
+      tier: "INCONCLUSIVE" as const,
+      severity: "info" as const,
+      title: `Table ${f.subject} could not be judged: the test environment was touched`,
+      attackerCan: `Nothing can be concluded about ${f.subject}: the migrations touched the test environment the results depend on.`,
+      causes: [],
+      provenBy: [],
+      notReproduced: [],
+      inconclusive: [{ id: f.id, reason: "the migrations touched the test environment the results depend on (see the integrity section)" }],
+      fixStatus: "not-needed" as const,
+      fixNote: "No fix is proposed while the results cannot be trusted.",
+    })),
+    fix: null,
+    verification: null,
+  };
+}
+
 /**
  * (e) Every input-derived field built from `h(label)`. With `h = (l) => l` it is the benign twin of the
  * hostile report: identical shape, so the markdown skeleton of both must match.
@@ -601,6 +634,7 @@ export function makeInjectionReport(h: (label: string) => string, sql: (label: s
     inputs: [{ path: h("input-path"), sha256: h("input-sha"), bytes: 10 }],
     environment: { mode: "docker", image: h("image"), postgresVersion: h("pg-version") },
     complete: false,
+    integrity: { status: "INTACT", violations: [] },
     summary: { subjects: 4, proven: 2, suspected: 1, clean: 1, inconclusive: 1, probesRun: 4, probesProven: 2 },
     findings: [
       finding({

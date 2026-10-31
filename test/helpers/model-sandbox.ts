@@ -79,7 +79,12 @@ function grantFor(table: Table, role: "anon" | "authenticated", command: Command
 
 const DENIED: ProbeObservation = { status: "error", sqlstate: "42501", message: "permission denied" };
 
+/** What the platform fingerprint looks like in the fake; `tamperedAfter` makes it differ from that call on. */
+const FINGERPRINT = [{ key: "function auth.uid()", value: "owner=supabase_admin;sha=1" }, { key: "role anon", value: "super=false" }];
+
 export interface ModelSandboxOptions {
+  /** Return a different fingerprint from this call (1-based) on, as if something had changed the platform. */
+  readonly tamperedAfter?: number;
   readonly model: SchemaModel;
   /** What the database looks like after the proposed fix is applied. */
   readonly fixed?: SchemaModel;
@@ -116,6 +121,14 @@ export class ModelSandbox implements Sandbox {
       if (q === "SELECT NULL") return { ok: true, value: null };
       return { ok: true, value: q.includes("WHERE") ? per : per * 2 };
     });
+  }
+
+  fingerprintCalls = 0;
+
+  async fingerprint(): Promise<unknown> {
+    this.fingerprintCalls += 1;
+    const tampered = this.options.tamperedAfter !== undefined && this.fingerprintCalls >= this.options.tamperedAfter;
+    return { entries: tampered ? [...FINGERPRINT, { key: "event trigger evil", value: "enabled=O" }] : FINGERPRINT };
   }
 
   async catalog(): Promise<unknown> {

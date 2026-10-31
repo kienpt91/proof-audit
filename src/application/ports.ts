@@ -27,8 +27,8 @@ export interface ProbeRun {
 }
 
 /**
- * A throwaway database the analysis may do anything to. Every operation runs as the database owner except
- * `run`, which switches to a client role. Implementations must only ever talk to a database created for this
+ * A throwaway database the analysis may do anything to. Statements that come from the project under analysis run
+ * as a role without superuser rights; `run` switches to a client role. Implementations must only ever talk to a database created for this
  * run on this machine, and must make `dispose` safe to call at any point.
  */
 export interface Sandbox {
@@ -40,6 +40,8 @@ export interface Sandbox {
   scalars(queries: readonly string[]): Promise<ScalarOutcome[]>;
   /** The catalog snapshot as parsed JSON; validated by the domain. */
   catalog(): Promise<unknown>;
+  /** The platform part of the sandbox (shim functions, roles, settings, event triggers) as parsed JSON; validated by the domain. */
+  fingerprint(): Promise<unknown>;
   /** Run each statement as a client role inside a transaction that is always rolled back. */
   run(probes: readonly ProbeRun[]): Promise<ProbeObservation[]>;
   /** A fresh copy of the database in its current state. */

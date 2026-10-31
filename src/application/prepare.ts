@@ -4,7 +4,10 @@ import { viewCountQueries, viewsOverProtectedTables, type SeedCounts, type ViewC
 import { qualifiedKey, type SchemaModel } from "../domain/schema/model.js";
 import { planSeed } from "../domain/seed/plan.js";
 import type { SqlStatement } from "../domain/sql/statement.js";
-import { identitySeedStatements, SHIM_STATEMENTS } from "../domain/supabase/shim.js";
+import { identitySeedStatements } from "../domain/supabase/shim.js";
+import { scanForTampering, type TamperAttempt } from "../domain/integrity/attempts.js";
+import { compareFingerprints, parseFingerprint, type Fingerprint } from "../domain/integrity/fingerprint.js";
+import type { IntegrityViolation } from "../domain/analysis/types.js";
 import { SandboxError, type Sandbox } from "./ports.js";
 
 export interface Prepared {
@@ -17,6 +20,21 @@ export interface Prepared {
   readonly seedCounts: ReadonlyMap<string, SeedCounts>;
   readonly viewCounts: ReadonlyMap<string, ViewCounts>;
   readonly warnings: readonly string[];
+  /** The platform part of the sandbox before any migration ran. */
+  readonly baseline: Fingerprint;
+  /** Statements that touch the test environment, found in the migration text. */
+  readonly attempts: readonly TamperAttempt[];
+  /** For each statement, by `file:line`, whether the database accepted it. */
+  readonly outcomes: ReadonlyMap<string, boolean>;
+  /** Differences between the baseline and the platform after the migrations and the seed rows. */
+  readonly platformChanges: readonly IntegrityViolation[];
+}
+
+/** Read the fingerprint and return what differs from the baseline. */
+export async function checkPlatform(sandbox: Sandbox, baseline: Fingerprint, when: string): Promise<IntegrityViolation[]> {
+  const parsed = parseFingerprint(await sandbox.fingerprint());
+  if (!parsed.ok) throw new SandboxError(`the database returned a platform fingerprint the tool could not read: ${parsed.error}`);
+  return compareFingerprints(baseline, parsed.value, when);
 }
 
 const oneLine = (text: string, max: number): string => {
@@ -30,24 +48,25 @@ const toNumber = (value: number | string | null | undefined): number => {
 };
 
 /**
- * Bring a fresh sandbox to the state every probe starts from: the Supabase shim, the user's migrations
- * (each statement on its own, failures recorded), the synthetic users, then one row per user in every
- * table. Everything after the shim is best effort and reported, never fatal.
+ * Bring a fresh sandbox to the state every probe starts from: the user's migrations (each statement on its own,
+ * failures recorded), the synthetic users, then one row per user in every table. The platform (roles, `auth.*`,
+ * grants) was provisioned when the sandbox was created; its fingerprint is taken before and after the migrations.
+ * Everything here is best effort and reported, never fatal.
  */
 export async function prepareSandbox(sandbox: Sandbox, statements: readonly SqlStatement[]): Promise<Prepared> {
   const warnings: string[] = [];
 
-  const shim = await sandbox.apply(SHIM_STATEMENTS);
-  const failed = shim.findIndex((o) => !o.ok);
-  if (failed !== -1) {
-    throw new SandboxError(`could not set up the Supabase compatibility layer (statement ${failed + 1}): ${oneLine(shim[failed]?.message ?? "unknown error", 200)}`);
-  }
+  const first = parseFingerprint(await sandbox.fingerprint());
+  if (!first.ok) throw new SandboxError(`the database returned a platform fingerprint the tool could not read: ${first.error}`);
+  const baseline = first.value;
 
   const runnable = statements.filter((s) => s.kind === "sql");
   const outcomes = await sandbox.apply(runnable.map((s) => s.text));
   const migrationErrors: StatementError[] = [];
+  const accepted = new Map<string, boolean>();
   runnable.forEach((s, i) => {
     const o = outcomes[i];
+    if (o) accepted.set(`${s.file}:${s.line}`, (accepted.get(`${s.file}:${s.line}`) ?? false) || o.ok);
     if (o && !o.ok) {
       migrationErrors.push({ file: s.file, line: s.line, statement: oneLine(s.text, 120), sqlstate: o.sqlstate ?? "?????", message: oneLine(o.message ?? "", 300) });
     }
@@ -55,6 +74,8 @@ export async function prepareSandbox(sandbox: Sandbox, statements: readonly SqlS
 
   const userRows = await sandbox.apply(identitySeedStatements());
   if (userRows.some((o) => !o.ok)) warnings.push("The synthetic users could not be added to auth.users; rows that reference them cannot be seeded.");
+
+  const platformChanges = await checkPlatform(sandbox, baseline, "after the migrations");
 
   const parsed = parseCatalog(await sandbox.catalog());
   if (!parsed.ok) throw new SandboxError(`the database returned a catalog the tool could not read: ${parsed.error}`);
@@ -101,5 +122,5 @@ export async function prepareSandbox(sandbox: Sandbox, statements: readonly SqlS
     viewCounts.set(qualifiedKey(view.name), { total: val(total, true), ownedByUserA: val(a, q.userA !== null), ownedByUserB: val(b, q.userB !== null) });
   }
 
-  return { model, serverVersion: snapshot.serverVersion, truncated: snapshot.truncated, migrationErrors, seeding, seedCounts, viewCounts, warnings };
+  return { model, serverVersion: snapshot.serverVersion, truncated: snapshot.truncated, migrationErrors, seeding, seedCounts, viewCounts, warnings, baseline, attempts: scanForTampering(statements), outcomes: accepted, platformChanges };
 }

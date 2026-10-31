@@ -27,7 +27,7 @@ function run(argv: string[]): Promise<{ code: number; out: string; err: string }
     dockerProvider: () => {
       throw new Error("the container provider must not be used in integration tests");
     },
-    urlProvider: (e) => new UrlSandboxProvider(e),
+    urlProvider: (e, o) => new UrlSandboxProvider(e, o),
     stdout: (t) => void out.push(t),
     stderr: (t) => void err.push(t),
   };
@@ -37,6 +37,7 @@ function run(argv: string[]): Promise<{ code: number; out: string; err: string }
 const VULN = "examples/vulnerable-app/supabase/migrations";
 const FIXED = "examples/fixed-app/supabase/migrations";
 const url = ["--database-url", databaseUrl];
+// The suite passes the password in the URL, which the CLI warns about; real use should prefer --database-url-env.
 
 describe.skipIf(!haveDatabase)("proof-audit CLI against real PostgreSQL", () => {
   const outDir = join(scratch, "run");
@@ -95,7 +96,7 @@ describe.skipIf(!haveDatabase)("proof-audit CLI against real PostgreSQL", () => 
     const first = await run(["rls", copy, "--out", join(scratch, "copy-out"), "--fail-on", "none", ...url]);
     expect(first.code).toBe(0);
     writeFileSync(join(copy, "20260105090000_init.sql"), `${readFileSync(join(copy, "20260105090000_init.sql"), "utf8")}\n-- edited\n`);
-    const r = await run(["verify", join(scratch, "copy-out", "proofs.jsonl"), ...url]);
+    const r = await run(["verify", join(scratch, "copy-out", "proofs.jsonl"), "--root", scratch, ...url]);
     expect(r.code).toBe(3);
     expect(r.out).toContain("changed since");
   });
@@ -120,5 +121,57 @@ describe.skipIf(!haveDatabase)("proof-audit CLI against real PostgreSQL", () => 
     const r = await run(["rls", VULN, "--json", "--fail-on", "none", ...url]);
     expect(r.code).toBe(0);
     expect(JSON.parse(r.out).findings.filter((f: { tier: string }) => f.tier === "PROVEN")).toHaveLength(6);
+  });
+});
+
+describe.skipIf(!haveDatabase)("CLI: integrity violation and server choice", () => {
+  it("exits 4 for a hostile migration set, writes no fix, and still prints what the database did", async () => {
+    const dir = join(scratch, "hostile");
+    cpSync("examples/vulnerable-app/supabase/migrations", dir, { recursive: true });
+    writeFileSync(join(dir, "20260107000000_hostile.sql"), "create or replace function auth.uid() returns uuid language sql as $$ select null::uuid $$;\ncreate event trigger evil on ddl_command_end execute function pg_catalog.pg_event_trigger_ddl_commands();\n");
+    const out = join(scratch, "hostile-out");
+    const r = await run(["rls", dir, "--out", out, ...url]);
+    expect(r.code).toBe(4);
+    expect(r.out).toContain("INTEGRITY_VIOLATION: DO NOT TRUST THESE RESULTS");
+    expect(() => readFileSync(join(out, "fix.sql"))).toThrow();
+    expect(JSON.parse(readFileSync(join(out, "report.json"), "utf8")).integrity.violations.length).toBeGreaterThanOrEqual(2);
+  });
+
+  it("refuses a server that holds another database unless told it is a throwaway", async () => {
+    const pg = (await import("pg")).default;
+    const e = endpoint();
+    const admin = new pg.Client({ host: e.host, port: e.port, user: e.user, ...(e.password === null ? {} : { password: e.password }), database: e.database, ssl: false });
+    await admin.connect();
+    try {
+      await admin.query("create database pa_cli_other");
+      const refused = await run(["rls", FIXED, ...url]);
+      expect(refused.code).toBe(3);
+      expect(refused.err).toContain("holds other databases");
+      const allowed = await run(["rls", FIXED, ...url, "--yes-this-is-throwaway"]);
+      expect(allowed.code).toBe(0);
+    } finally {
+      await admin.query("drop database if exists pa_cli_other");
+      await admin.end();
+    }
+  });
+
+  it("uses the server named by --database-url-env, without the password-in-argv warning", async () => {
+    const env = { ...process.env, PA_TEST_URL: databaseUrl };
+    const out: string[] = [];
+    const err: string[] = [];
+    const cwd = process.cwd();
+    const code = await runCli(["rls", FIXED, "--database-url-env", "PA_TEST_URL"], {
+      cwd, env, version: "0.1.0", clock,
+      loadSql: (paths) => loadSqlInputs(paths, cwd),
+      readText: async (p, max) => (await readBoundedText(p, max)).content,
+      writeOutputs,
+      dockerProvider: () => { throw new Error("no container"); },
+      urlProvider: (e, o) => new UrlSandboxProvider(e, o),
+      stdout: (t) => void out.push(t),
+      stderr: (t) => void err.push(t),
+    });
+    expect(code).toBe(0);
+    expect(err.join("")).toContain("using the PostgreSQL server at 127.0.0.1");
+    expect(err.join("")).not.toContain("visible to other users");
   });
 });

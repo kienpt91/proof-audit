@@ -33,7 +33,7 @@ describe("parseArgs: rls", () => {
       format: "text",
       out: null,
       fromAudit: null,
-      databaseUrl: null,
+      database: { kind: "container" },
       proposeFix: true,
       failOn: "proven",
     });
@@ -71,16 +71,38 @@ describe("parseArgs: rls", () => {
     expect(parse(["rls", "m", "--fail-on", "sometimes"]).ok).toBe(false);
   });
 
-  it("takes the database URL from the environment and lets the flag win", () => {
-    expect(value(["rls", "m"], { PROOF_AUDIT_DATABASE_URL: "postgres://env" })).toMatchObject({ databaseUrl: "postgres://env" });
-    expect(value(["rls", "m", "--database-url", "postgres://flag"], { PROOF_AUDIT_DATABASE_URL: "postgres://env" })).toMatchObject({ databaseUrl: "postgres://flag" });
-    expect(value(["rls", "m"], { PROOF_AUDIT_DATABASE_URL: "" })).toMatchObject({ databaseUrl: null });
+  it("never picks up a database URL from the environment on its own", () => {
+    expect(value(["rls", "m"], { PROOF_AUDIT_DATABASE_URL: "postgres://env", DATABASE_URL: "postgres://other" })).toMatchObject({ database: { kind: "container" } });
+  });
+
+  it("reads a URL given on the command line", () => {
+    expect(value(["rls", "m", "--database-url", "postgres://u@127.0.0.1/d"])).toMatchObject({ database: { kind: "url", url: "postgres://u@127.0.0.1/d", fromEnv: null, yesThisIsThrowaway: false } });
+  });
+
+  it("reads the URL from the environment variable named by --database-url-env", () => {
+    expect(value(["rls", "m", "--database-url-env", "MY_URL"], { MY_URL: "postgres://u@127.0.0.1/d" })).toMatchObject({ database: { kind: "url", url: "postgres://u@127.0.0.1/d", fromEnv: "MY_URL" } });
+  });
+
+  it("refuses --database-url-env when the variable is unset or empty, and both URL flags at once", () => {
+    expect(parse(["rls", "m", "--database-url-env", "MY_URL"], {}).ok).toBe(false);
+    expect(parse(["rls", "m", "--database-url-env", "MY_URL"], { MY_URL: "" }).ok).toBe(false);
+    expect(parse(["rls", "m", "--database-url", "postgres://a", "--database-url-env", "X"], { X: "postgres://b" }).ok).toBe(false);
+  });
+
+  it("records --yes-this-is-throwaway and refuses it without a URL", () => {
+    expect(value(["rls", "m", "--database-url", "postgres://u@127.0.0.1/d", "--yes-this-is-throwaway"])).toMatchObject({ database: { yesThisIsThrowaway: true } });
+    expect(parse(["rls", "m", "--yes-this-is-throwaway"]).ok).toBe(false);
   });
 });
 
 describe("parseArgs: verify", () => {
   it("takes a proofs file", () => {
-    expect(value(["verify", "proofs.jsonl"])).toEqual({ kind: "verify", proofs: "proofs.jsonl", against: null, root: null, databaseUrl: null });
+    expect(value(["verify", "proofs.jsonl"])).toEqual({ kind: "verify", proofs: "proofs.jsonl", against: null, root: null, database: { kind: "container" } });
+  });
+
+  it("takes the same database options as rls", () => {
+    expect(value(["verify", "p", "--database-url-env", "U", "--yes-this-is-throwaway"], { U: "postgres://u@localhost/d" })).toMatchObject({ database: { kind: "url", fromEnv: "U", yesThisIsThrowaway: true } });
+    expect(value(["verify", "p"], { PROOF_AUDIT_DATABASE_URL: "postgres://env" })).toMatchObject({ database: { kind: "container" } });
   });
 
   it("takes every path after --against up to the next flag", () => {

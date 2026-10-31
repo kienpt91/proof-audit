@@ -171,6 +171,9 @@ alter table public."we""ird; drop table x; --" enable row level security;`,
     expect(report.findings.length).toBeGreaterThanOrEqual(2);
     expect(report.fix?.statements.some((s) => /[\u0000-\u001f\u007f]/.test(s))).toBe(false);
     expect(report.fix?.sql).not.toMatch(/[\u0000-\u0008\u000b-\u001f\u007f]/);
+    // the generated fix, with hostile identifiers quoted, applies cleanly and does what it says
+    expect(report.verification?.applyErrors).toEqual([]);
+    expect(report.verification?.subjects.every((v) => v.status === "VERIFIED")).toBe(true);
   });
 
   it("does not let a migration that rewrites the roles fool the later probes", async () => {

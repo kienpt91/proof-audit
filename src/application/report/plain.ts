@@ -11,6 +11,8 @@ import {
   fixIsConfirmed,
   fixLine,
   headlineCounts,
+  INTEGRITY_EXPLANATION,
+  INTEGRITY_HEADLINE,
   narrateProof,
   nonClean,
   plural,
@@ -22,6 +24,7 @@ import {
   subjectCheckWords,
   tierCaveat,
   tierHeadline,
+  violationParts,
 } from "./shared.js";
 
 const text = (s: string): string => terminalText(s, LIMITS.text);
@@ -104,6 +107,14 @@ export function renderPlain(report: AnalysisReport): string {
 
   out.push(`RESULT: ${headlineCounts(report)}.`);
   out.push(resultParagraph(report));
+
+  if (report.integrity.status === "INTEGRITY_VIOLATION") {
+    heading(out, INTEGRITY_HEADLINE);
+    out.push(INTEGRITY_EXPLANATION, "");
+    for (const v of report.integrity.violations.slice(0, LIMITS.warnings)) out.push(`- ${fmt(violationParts(v))}`);
+    const more = report.integrity.violations.length - LIMITS.warnings;
+    if (more > 0) out.push(`... and ${more} more.`);
+  }
 
   heading(out, "What we found");
   const problems = nonClean(report.findings);

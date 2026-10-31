@@ -2,7 +2,9 @@ import { describe, expect, it } from "vitest";
 import { analyzeRls } from "../../src/application/analyze.js";
 import type { Clock, LoadedFile, Sandbox, SandboxProvider } from "../../src/application/ports.js";
 import { verifyEvidence } from "../../src/application/verify.js";
-import { encodeProofsJsonl } from "../../src/domain/evidence/proofs.js";
+import { decodeProofsJsonl, encodeProofsJsonl, type ProofsMeta } from "../../src/domain/evidence/proofs.js";
+import type { Proof } from "../../src/domain/proof/types.js";
+import { sealProof } from "../../src/domain/proof/hash.js";
 import { ALL, model, notes } from "../helpers/model.js";
 import { ModelSandbox, type ModelSandboxOptions } from "../helpers/model-sandbox.js";
 
@@ -115,5 +117,118 @@ describe("verifyEvidence: --against", () => {
     const text = await evidence(vulnerable, [{ path: "gone.sql", content: "x", bytes: 1 }]);
     const r = await verifyEvidence({ proofsText: text, readInput: readInput([]), against: [file] }, { provider: providerFor({ model: model([notes()]) }), clock });
     expect(r.status).toBe("ok");
+  });
+});
+
+describe("verifyEvidence: the evidence file is not trusted to carry SQL", () => {
+  const recorderFor = (options: ModelSandboxOptions) => {
+    const sandboxes: ModelSandbox[] = [];
+    const provider: SandboxProvider = {
+      async create() {
+        const sandbox = new ModelSandbox(options);
+        sandboxes.push(sandbox);
+        return { sandbox, environment: { mode: "url", image: "loopback" } };
+      },
+    };
+    const everything = () => sandboxes.flatMap((s) => s.applied);
+    return { provider, everything, sandboxes };
+  };
+
+  type Mutable<T> = { -readonly [K in keyof T]: T[K] };
+  type MutableMeta = Mutable<ProofsMeta> & { fixStatements: string[] };
+
+  async function forged(change: (meta: MutableMeta, proofs: Mutable<Proof>[]) => void): Promise<string> {
+    const decoded = decodeProofsJsonl(await evidence());
+    if (!decoded.ok) throw new Error(decoded.error);
+    const meta: MutableMeta = { ...decoded.value.meta, fixStatements: [...decoded.value.meta.fixStatements] };
+    const proofs = decoded.value.proofs.map((p) => ({ ...p }));
+    change(meta, proofs);
+    return encodeProofsJsonl(meta, proofs.map(({ hash: _hash, ...rest }) => sealProof(rest)));
+  }
+
+  it("refuses a recorded fix this tool did not generate, with valid hashes, and never applies it", async () => {
+    const text = await forged((meta) => meta.fixStatements.push("COPY (SELECT 1) TO PROGRAM 'id'"));
+    const rec = recorderFor(vulnerable);
+    const r = await verifyEvidence({ proofsText: text, readInput: readInput([file]), against: null }, { provider: rec.provider, clock });
+    expect(r.status).toBe("invalid");
+    expect(r.messages[0]).toContain("not the fix this tool generates");
+    expect(rec.everything().some((s) => s.includes("PROGRAM"))).toBe(false);
+    expect(rec.sandboxes.every((s) => s.forks === 0)).toBe(true);
+  });
+
+  it("refuses recorded probe SQL this tool did not generate, with valid hashes, and runs nothing", async () => {
+    const text = await forged((_meta, proofs) => {
+      const first = proofs[0];
+      if (first) first.sql = "DROP TABLE public.notes";
+    });
+    const rec = recorderFor(vulnerable);
+    const runs: string[] = [];
+    const wrapped: SandboxProvider = {
+      create: async () => {
+        const created = await rec.provider.create();
+        const run = created.sandbox.run.bind(created.sandbox);
+        created.sandbox.run = async (probes) => {
+          runs.push(...probes.map((p) => p.sql));
+          return run(probes);
+        };
+        return created;
+      },
+    };
+    const r = await verifyEvidence({ proofsText: text, readInput: readInput([file]), against: null }, { provider: wrapped, clock });
+    expect(r.status).toBe("invalid");
+    expect(r.messages.join("\n")).toContain("differ from what this tool generates");
+    expect(runs).toEqual([]);
+  });
+
+  it("refuses recorded claims or roles that differ from the generated probe", async () => {
+    const text = await forged((_meta, proofs) => {
+      const first = proofs[0];
+      if (first) first.claims = '{"role":"service_role"}';
+    });
+    const r = await verifyEvidence({ proofsText: text, readInput: readInput([file]), against: null }, { provider: recorderFor(vulnerable).provider, clock });
+    expect(r.status).toBe("invalid");
+  });
+
+  it("refuses a probe the tool would not plan for these migrations", async () => {
+    const text = await forged((_meta, proofs) => {
+      const first = proofs[0];
+      if (first) {
+        first.id = "public.nowhere/anon-read";
+        first.subject = "public.nowhere";
+      }
+    });
+    const r = await verifyEvidence({ proofsText: text, readInput: readInput([file]), against: null }, { provider: recorderFor(vulnerable).provider, clock });
+    expect(r.status).toBe("invalid");
+    expect(r.messages.join("\n")).toContain("would not run that probe");
+  });
+
+  it("refuses evidence without proofs and --against evidence without a proven attack", async () => {
+    const empty = encodeProofsJsonl({ tool, image: "loopback", inputs: [], fixStatements: [], fixSha256: null }, []);
+    expect((await verifyEvidence({ proofsText: empty, readInput: readInput([]), against: null }, { provider: recorderFor(vulnerable).provider, clock })).status).toBe("invalid");
+    const clean = await evidence({ model: model([notes()]) });
+    const r = await verifyEvidence({ proofsText: clean, readInput: readInput([]), against: [file] }, { provider: recorderFor({ model: model([notes()]) }).provider, clock });
+    expect(r.status).toBe("invalid");
+    expect(r.messages[0]).toContain("no proven attack");
+  });
+
+  it("refuses recorded input paths that climb out of the directory", async () => {
+    const decoded = decodeProofsJsonl(await evidence());
+    if (!decoded.ok) throw new Error(decoded.error);
+    const text = encodeProofsJsonl({ ...decoded.value.meta, inputs: [{ path: "../../etc/passwd", sha256: "0".repeat(64), bytes: 1 }] }, decoded.value.proofs);
+    const r = await verifyEvidence({ proofsText: text, readInput: readInput([]), against: null }, { provider: recorderFor(vulnerable).provider, clock });
+    expect(r.status).toBe("invalid");
+  });
+
+  it("reports an integrity violation instead of a result when the platform changed during the replay", async () => {
+    const text = await evidence();
+    const r = await verifyEvidence({ proofsText: text, readInput: readInput([file]), against: null }, { provider: recorderFor({ ...vulnerable, tamperedAfter: 3 }).provider, clock });
+    expect(r.status).toBe("integrity");
+    expect(r.messages[0]).toContain("platform-changed");
+  });
+
+  it("reports an integrity violation in --against mode too", async () => {
+    const text = await evidence();
+    const r = await verifyEvidence({ proofsText: text, readInput: readInput([]), against: [file] }, { provider: recorderFor({ model: model([notes()]), tamperedAfter: 2 }).provider, clock });
+    expect(r.status).toBe("integrity");
   });
 });
