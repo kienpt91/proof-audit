@@ -1,0 +1,23 @@
+{
+  "schema": "proof-audit/verification-contract@1",
+  "tool": {
+    "name": "proof-audit",
+    "version": "0.1.0"
+  },
+  "checks": [
+    {
+      "id": "evidence-reproduces",
+      "description": "Re-runs every recorded probe in a fresh throwaway database and compares the results with the recorded verdicts.",
+      "command": "proof-audit verify examples/vulnerable-app/sample-output/proofs.jsonl",
+      "expectedExitCode": 0,
+      "mandatory": true
+    },
+    {
+      "id": "fix-closes-proven-holes",
+      "description": "Re-runs the recorded probes against the current migrations; passes only when every probe that was proven is now denied and the legitimate-access probes still succeed.",
+      "command": "proof-audit verify examples/vulnerable-app/sample-output/proofs.jsonl --against examples/vulnerable-app/supabase/migrations",
+      "expectedExitCode": 0,
+      "mandatory": true
+    }
+  ]
+}
