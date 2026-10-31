@@ -1,0 +1,84 @@
+{
+  "tool": {
+    "name": "saas-audit",
+    "version": "1.2.0"
+  },
+  "complete": false,
+  "summary": {
+    "total": 2,
+    "suppressed": 1,
+    "bySeverity": {
+      "critical": 1,
+      "high": 0,
+      "medium": 1,
+      "low": 0,
+      "info": 0
+    }
+  },
+  "stats": {
+    "filesScanned": 8
+  },
+  "config": {
+    "source": null,
+    "ignoreRules": [],
+    "ignorePaths": [],
+    "authHelpers": [],
+    "publicRoutes": [],
+    "tenantColumns": [],
+    "sanitizers": [],
+    "dataAccessRoots": [],
+    "idempotencyHelpers": [],
+    "rateLimiters": [],
+    "skippedDirs": [
+      "node_modules",
+      ".next",
+      ".git"
+    ],
+    "ignoredPathCount": 0
+  },
+  "findings": [
+    {
+      "rule": "stripe-webhook-unverified",
+      "severity": "critical",
+      "file": "app/api/stripe/webhook/route.ts",
+      "line": 9,
+      "title": "Stripe webhook handler never verifies the signature",
+      "message": "Anyone can post a forged event to this URL and mark an order as paid.",
+      "evidence": "const event = JSON.parse(body)",
+      "fix": "Call stripe.webhooks.constructEvent with the raw body and the signing secret."
+    },
+    {
+      "rule": "build-checks-disabled",
+      "severity": "medium",
+      "file": "next.config.mjs",
+      "line": 3,
+      "title": "Build skips type checking",
+      "message": "typescript.ignoreBuildErrors is true.",
+      "evidence": "typescript: { ignoreBuildErrors: true },",
+      "fix": "Remove the flag and fix the errors."
+    }
+  ],
+  "suppressed": [
+    {
+      "rule": "supabase-policy-missing",
+      "severity": "medium",
+      "file": "supabase/migrations/0003_internal.sql",
+      "line": 1,
+      "title": "Table public.job_queue has row level security but no policies",
+      "message": "With RLS on and no policy, anon and authenticated clients are denied every operation.",
+      "evidence": "create table public.job_queue (",
+      "fix": "Document the service-role-only access.",
+      "suppressedBy": "config: ignoreRules"
+    }
+  ],
+  "skipped": [
+    "packages/legacy: directory limit reached"
+  ],
+  "warnings": [],
+  "notes": [
+    "No SQL migrations were found, so Supabase policy rules did not run."
+  ],
+  "futureField": {
+    "anything": true
+  }
+}

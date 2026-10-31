@@ -1,0 +1,96 @@
+{
+  "tool": {
+    "name": "saas-audit",
+    "version": "0.0.9"
+  },
+  "project": "multi-tenant-shop",
+  "summary": {
+    "total": 8
+  },
+  "findings": [
+    {
+      "rule": "supabase-rls-missing",
+      "severity": "critical",
+      "file": "supabase/migrations/20240102_orders.sql",
+      "line": 3,
+      "title": "Table app.orders has no row level security",
+      "message": "Tables in the public schema are exposed through the REST API to anyone with the anon key. Without ENABLE ROW LEVEL SECURITY every row can be read (orders has tenant_id, so these are per-user rows) and, with the default grants, written.",
+      "evidence": "create table app.orders (",
+      "fix": "Add \"alter table app.orders enable row level security;\" in a migration, then add policies for each operation the app needs."
+    },
+    {
+      "rule": "supabase-rls-missing",
+      "severity": "high",
+      "file": "supabase/migrations/20240102_orders.sql",
+      "line": 20,
+      "title": "Table public.Audit Log has no row level security",
+      "message": "Tables in the public schema are exposed through the REST API to anyone with the anon key. Without ENABLE ROW LEVEL SECURITY every row can be read and, with the default grants, written.",
+      "evidence": "create table public.\"Audit Log\" (",
+      "fix": "Add \"alter table public.Audit Log enable row level security;\" in a migration, then add policies for each operation the app needs."
+    },
+    {
+      "rule": "supabase-policy-permissive",
+      "severity": "high",
+      "file": "supabase/migrations/20240103_policies.sql",
+      "line": 5,
+      "title": "Policy \"anon write\" allows the anon role to write to comments",
+      "message": "The anon role is anyone holding the public anon key. WITH CHECK (author_id is not null) is the only thing standing between the internet and writes to comments.",
+      "evidence": "create policy \"anon write\" on public.comments",
+      "fix": "Grant write policies to the authenticated role and require auth.uid() in the expression. If anonymous writes are intended (a contact form), write through a server route with validation and rate limiting instead."
+    },
+    {
+      "rule": "supabase-policy-permissive",
+      "severity": "high",
+      "file": "supabase/migrations/20240103_policies.sql",
+      "line": 12,
+      "title": "Policy \"visitors may delete\" allows the anon role to delete tags",
+      "message": "The anon role is anyone holding the public anon key. USING (id > 0) is the only thing standing between the internet and writes to tags.",
+      "evidence": "create policy \"visitors may delete\" on public.tags for delete to anon",
+      "fix": "Grant write policies to the authenticated role and require auth.uid() in the expression."
+    },
+    {
+      "rule": "supabase-policy-permissive",
+      "severity": "medium",
+      "file": "supabase/migrations/20240103_policies.sql",
+      "line": 30,
+      "title": "Policy \"convoluted\" is nested too deeply to analyse",
+      "message": "The expression groups conditions more than 64 levels deep, so it could not be checked for constant-true conditions. A policy that cannot be read by a reviewer is not a policy to rely on.",
+      "evidence": "create policy \"convoluted\" on public.docs for select using ((((((((",
+      "fix": "Rewrite the expression flat: one condition per line, tied to auth.uid()."
+    },
+    {
+      "rule": "supabase-policy-permissive",
+      "severity": "medium",
+      "file": "supabase/migrations/20240103_policies.sql",
+      "line": 40,
+      "title": "Policy \"shared lookups\" lets public read every row of countries",
+      "message": "USING (true) is always true. That is fine for genuinely public reference data and a leak for anything else.",
+      "evidence": "create policy \"shared lookups\" on public.countries for select using (true)",
+      "fix": "Scope the policy to the caller."
+    },
+    {
+      "rule": "supabase-tenant-unscoped",
+      "severity": "high",
+      "file": "supabase/migrations/20240101_comments.sql",
+      "line": 7,
+      "title": "No policy on comments ties author_id / created_by to the caller",
+      "message": "comments has author_id, created_by to identify who owns a row, but none of its 2 policies compare it with auth.uid() or passes it to a membership function. Any user the policies admit can reach every other user's or tenant's rows.",
+      "evidence": "create table public.comments (",
+      "fix": "Add the owner column to the USING and WITH CHECK expressions, for example using (auth.uid() = author_id) with check (auth.uid() = author_id)."
+    },
+    {
+      "rule": "secret-hardcoded",
+      "severity": "medium",
+      "file": "lib/mail.ts",
+      "line": 2,
+      "title": "Key-shaped literal in source",
+      "message": "A string that looks like an API key is assigned to a constant.",
+      "evidence": "const key = 'sk_live_REDACTED'",
+      "fix": "Move the value to an environment variable and rotate it."
+    }
+  ],
+  "suppressed": [],
+  "warnings": [
+    "supabase/seed.sql: file larger than the scan limit, skipped"
+  ]
+}

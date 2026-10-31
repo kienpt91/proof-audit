@@ -1,0 +1,143 @@
+{
+  "tool": {
+    "name": "saas-audit",
+    "version": "0.1.0"
+  },
+  "project": "vibe-app",
+  "complete": true,
+  "summary": {
+    "total": 9,
+    "suppressed": 0,
+    "bySeverity": {
+      "critical": 3,
+      "high": 4,
+      "medium": 1,
+      "low": 0,
+      "info": 1
+    }
+  },
+  "stats": {
+    "filesScanned": 21,
+    "sourceFiles": 14,
+    "sqlFiles": 2,
+    "tablesFound": 5,
+    "policiesFound": 4,
+    "routeHandlers": 2,
+    "serverActions": 0,
+    "clientComponents": 3
+  },
+  "config": {
+    "source": null,
+    "ignoreRules": [],
+    "ignorePaths": [],
+    "authHelpers": [],
+    "publicRoutes": [],
+    "tenantColumns": [],
+    "sanitizers": [],
+    "dataAccessRoots": [],
+    "idempotencyHelpers": [],
+    "rateLimiters": [],
+    "skippedDirs": [
+      "node_modules",
+      ".next",
+      ".git"
+    ],
+    "ignoredPathCount": 0
+  },
+  "findings": [
+    {
+      "rule": "supabase-rls-missing",
+      "severity": "critical",
+      "file": "supabase/migrations/0001_init.sql",
+      "line": 24,
+      "title": "Table public.invoices has no row level security",
+      "message": "Tables in the public schema are exposed through the REST API to anyone with the anon key. Without ENABLE ROW LEVEL SECURITY every row can be read (invoices has user_id, so these are per-user rows) and, with the default grants, written.",
+      "evidence": "create table public.invoices (",
+      "fix": "Add \"alter table public.invoices enable row level security;\" in a migration, then add policies for each operation the app needs."
+    },
+    {
+      "rule": "supabase-policy-permissive",
+      "severity": "critical",
+      "file": "supabase/migrations/0002_policies.sql",
+      "line": 21,
+      "title": "Policy \"anyone can send feedback\" lets anon insert every row of feedback",
+      "message": "WITH CHECK (true) is always true, so row level security does not restrict inserts on feedback for anon. The anon key ships in every browser bundle, so anyone on the internet can use it.",
+      "evidence": "create policy \"anyone can send feedback\" on public.feedback",
+      "fix": "Replace the constant with a condition tied to the caller, for example auth.uid() = <owner column>, or drop the policy and add a narrower one."
+    },
+    {
+      "rule": "secret-in-client",
+      "severity": "critical",
+      "file": "components/BillingPanel.tsx",
+      "line": 4,
+      "title": "Server secret STRIPE_SECRET_KEY read in a client component",
+      "message": "Client components are bundled for the browser, so the value is delivered to every visitor.",
+      "evidence": "const stripe = new Stripe(process.env.STRIPE_SECRET_KEY!)",
+      "fix": "Move the call to a server route or action and read the secret there."
+    },
+    {
+      "rule": "supabase-policy-permissive",
+      "severity": "high",
+      "file": "supabase/migrations/0002_policies.sql",
+      "line": 9,
+      "title": "Policy \"profiles readable\" lets every role including anon read every row of profiles",
+      "message": "USING (true) is always true. profiles has an owner column, so this exposes every user's rows.",
+      "evidence": "create policy \"profiles readable\" on public.profiles",
+      "fix": "Scope the policy to the caller (auth.uid() = owner column). If the table is public on purpose, keep the policy and add a saas-audit-ignore-next-line comment with the reason."
+    },
+    {
+      "rule": "supabase-policy-permissive",
+      "severity": "high",
+      "file": "supabase/migrations/0002_policies.sql",
+      "line": 17,
+      "title": "Policy \"projects all\" lets authenticated read and write every row of projects",
+      "message": "USING (true) is always true, so row level security does not restrict reads or writes on projects for authenticated.",
+      "evidence": "create policy \"projects all\" on public.projects",
+      "fix": "Replace the constant with a condition tied to the caller, for example auth.uid() = user_id, or drop the policy and add a narrower one."
+    },
+    {
+      "rule": "supabase-tenant-unscoped",
+      "severity": "high",
+      "file": "supabase/migrations/0001_init.sql",
+      "line": 10,
+      "title": "No policy on projects ties user_id to the caller",
+      "message": "projects has user_id to identify who owns a row, but none of its 1 policy compares it with auth.uid() or passes it to a membership function. Any user the policies admit can reach every other user's or tenant's rows.",
+      "evidence": "create table public.projects (",
+      "fix": "Add the owner column to the USING and WITH CHECK expressions, for example using (auth.uid() = user_id) with check (auth.uid() = user_id)."
+    },
+    {
+      "rule": "api-route-no-auth",
+      "severity": "high",
+      "file": "app/api/export/route.ts",
+      "line": 6,
+      "title": "Route handler reads data without an auth check",
+      "message": "GET reads from the database and nothing in the handler establishes who is calling.",
+      "evidence": "const { data } = await supabase.from('invoices').select('*')",
+      "fix": "Call your auth helper first and return 401 when there is no session."
+    },
+    {
+      "rule": "supabase-policy-missing",
+      "severity": "medium",
+      "file": "supabase/migrations/0001_init.sql",
+      "line": 17,
+      "title": "Table public.notes has row level security but no policies",
+      "message": "With RLS on and no policy, anon and authenticated clients are denied every operation. Either the table is only used through the service role, or the app is broken and the quick fix will be to switch RLS off or add a policy with USING (true).",
+      "evidence": "create table public.notes (",
+      "fix": "Add one policy per operation the app needs, scoped with auth.uid(). If only server code touches the table, document that and suppress this finding."
+    },
+    {
+      "rule": "no-rate-limit",
+      "severity": "info",
+      "file": "app/api/login/route.ts",
+      "line": 1,
+      "title": "Auth route with no rate limiting",
+      "message": "No rate limiter was recognised in this handler.",
+      "evidence": "export async function POST(req: Request) {",
+      "fix": "Add a rate limiter keyed by IP and account."
+    }
+  ],
+  "suppressed": [],
+  "skipped": [],
+  "warnings": [],
+  "notes": []
+}
