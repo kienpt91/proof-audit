@@ -1,0 +1,102 @@
+{
+  "tool": {
+    "name": "saas-audit",
+    "version": "0.1.0"
+  },
+  "project": "audit",
+  "complete": true,
+  "summary": {
+    "total": 5,
+    "suppressed": 0,
+    "bySeverity": {
+      "critical": 2,
+      "high": 3,
+      "medium": 0,
+      "low": 0,
+      "info": 0
+    }
+  },
+  "stats": {
+    "filesScanned": 2,
+    "sourceFiles": 0,
+    "sqlFiles": 2,
+    "tablesFound": 6,
+    "policiesFound": 9,
+    "routeHandlers": 0,
+    "serverActions": 0,
+    "clientComponents": 0
+  },
+  "config": {
+    "ignoreRules": [],
+    "ignorePaths": [],
+    "authHelpers": [],
+    "publicRoutes": [],
+    "tenantColumns": [],
+    "sanitizers": [],
+    "dataAccessRoots": [],
+    "idempotencyHelpers": [],
+    "rateLimiters": [],
+    "source": null,
+    "skippedDirs": [],
+    "ignoredPathCount": 0
+  },
+  "findings": [
+    {
+      "rule": "supabase-rls-missing",
+      "severity": "critical",
+      "file": "supabase/migrations/20260105090000_init.sql",
+      "line": 10,
+      "title": "Table public.profiles has no row level security",
+      "message": "Tables in the public schema are exposed through the REST API to anyone with the anon key. Without ENABLE ROW LEVEL SECURITY every row can be read (profiles has id, so these are per-user rows) and, with the default grants, written.",
+      "evidence": "create table public.profiles (",
+      "fix": "Add \"alter table public.profiles enable row level security;\" in a migration, then add policies for each operation the app needs."
+    },
+    {
+      "rule": "supabase-policy-permissive",
+      "severity": "critical",
+      "file": "supabase/migrations/20260105090000_init.sql",
+      "line": 44,
+      "title": "Policy \"Anyone can use tickets\" lets every role including anon read and write every row of tickets",
+      "message": "USING (true) is always true, so row level security does not restrict reads or writes on tickets for every role including anon. The anon key ships in every browser bundle, so anyone on the internet can use it.",
+      "evidence": "create policy \"Anyone can use tickets\" on public.tickets",
+      "fix": "Replace the constant with a condition tied to the caller, for example auth.uid() = user_id, or drop the policy and add a narrower one."
+    },
+    {
+      "rule": "supabase-policy-permissive",
+      "severity": "high",
+      "file": "supabase/migrations/20260105090000_init.sql",
+      "line": 27,
+      "title": "Policy \"Notes are viewable by everyone\" lets every role including anon read every row of notes",
+      "message": "USING (true) is always true. notes has an owner column, so this exposes every user's rows.",
+      "evidence": "create policy \"Notes are viewable by everyone\" on public.notes",
+      "fix": "Scope the policy to the caller (auth.uid() = owner column). If the table is public on purpose, keep the policy and add a saas-audit-ignore-next-line comment with the reason."
+    },
+    {
+      "rule": "supabase-tenant-unscoped",
+      "severity": "high",
+      "file": "supabase/migrations/20260105090000_init.sql",
+      "line": 36,
+      "title": "No policy on tickets ties user_id to the caller",
+      "message": "tickets has user_id to identify who owns a row, but none of its 1 policy compares it with auth.uid() or passes it to a membership function. Any user the policies admit can reach every other user's or tenant's rows.",
+      "evidence": "create table public.tickets (",
+      "fix": "Add the owner column to the USING and WITH CHECK expressions, for example using (auth.uid() = user_id) with check (auth.uid() = user_id)."
+    },
+    {
+      "rule": "supabase-policy-permissive",
+      "severity": "high",
+      "file": "supabase/migrations/20260105090000_init.sql",
+      "line": 62,
+      "title": "Policy \"Owners can edit documents\" lets authenticated update every row of documents",
+      "message": "WITH CHECK (true) is always true, so row level security does not restrict updates on documents for authenticated.",
+      "evidence": "create policy \"Owners can edit documents\" on public.documents",
+      "fix": "Replace the constant with a condition tied to the caller, for example auth.uid() = user_id, or drop the policy and add a narrower one."
+    }
+  ],
+  "suppressed": [],
+  "skipped": [],
+  "warnings": [],
+  "notes": [
+    "No readable .git/index at the project root: whether .env files are tracked was judged from .gitignore rules only.",
+    "No route handlers, server actions or API routes were recognised, so the auth, Stripe and redirect rules had nothing to check."
+  ]
+}
