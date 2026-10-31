@@ -8,7 +8,10 @@ proof-audit has one job: turn the suspicion "this table's row level security mig
 | --- | --- |
 | **Migration** | A plain SQL file the user supplies. The tool never reads a live system, an `.env` file or a secret. |
 | **Sandbox** | A throwaway PostgreSQL database the tool creates for one run: either inside a container with no network, or inside a database on the loopback interface of this machine. It is destroyed afterwards. |
-| **Shim** | The part of a Supabase project that row level security depends on, rebuilt in the sandbox: the roles `anon`, `authenticated` and `service_role`, `auth.users`, `auth.uid()`/`role()`/`jwt()`/`email()` reading `request.jwt.claims`, and Supabase's default privileges. |
+| **Admin, migrator, prober** | The three database roles of the sandbox. The *admin* is a superuser that only runs statements written by the tool. The *migrator* is what Supabase calls `postgres`: it applies the migrations, seeds and fixes without superuser rights. The *prober* only switches to `anon` and `authenticated` to run probes. |
+| **Platform fingerprint** | The `auth.*` functions (owner and body hash), roles, memberships, settings, event triggers and platform schemas, read before the migrations, after them, after the probes and after the fix probes. A difference is an integrity violation. |
+| **Integrity violation** | A migration touched, or tried to touch, the test environment the verdicts depend on (redefining `auth.*`, event triggers, `ALTER DATABASE/ROLE ... SET search_path`, catalog writes, the tool's own schema) or a fingerprint changed. The run is `INTEGRITY_VIOLATION` (exit code 4): every finding is INCONCLUSIVE and no fix is proposed. |
+| **Platform / shim** | The part of a Supabase project that row level security depends on, rebuilt in the sandbox by the admin: the roles `anon`, `authenticated` and `service_role`, `auth.users`, `auth.uid()`/`role()`/`jwt()`/`email()` reading `request.jwt.claims`, and Supabase's default privileges. |
 | **Schema model** | Tables, columns, policies, privileges and views as the sandbox reports them (the *catalog model*), or as the SQL reader understood them from the migration text (the *parsed model*). |
 | **Owner column** | The column that says whose row it is: `user_id`, `owner_id`, `created_by`, `tenant_id`, `org_id`, a column referencing `auth.users`, a column defaulting to `auth.uid()`. Detected by explainable heuristics; the first user-kind column with at least medium confidence is the *primary owner column*. |
 | **Synthetic identity** | User A (`alice@example.test`), user B (`bob@example.test`) and the anonymous caller. Fixed values, never real data. |
@@ -21,7 +24,7 @@ proof-audit has one job: turn the suspicion "this table's row level security mig
 | **Cause** | A static reason that explains a proof (policy with an always-true condition, row level security off, a policy that compares the wrong column). A cause alone never makes a finding PROVEN. |
 | **Fix** | SQL derived from the model: enable RLS, owner-scoped policies written with `(select auth.uid())`, revoke anon privileges, `security_invoker` views. Always a starting point. |
 | **Verification** | The same probes re-run on a fresh copy of the sandbox with the fix applied. A fix is `VERIFIED` only if every previously proven probe is now refused **and** every legitimate probe that worked before still works. |
-| **Evidence file** | `proofs.jsonl`: one metadata line, then one line per proof. `proof-audit verify` replays it. |
+| **Evidence file** | `proofs.jsonl`: one metadata line, then one line per proof. `proof-audit verify` regenerates the probes and the fix and replays them; the file's SQL is never executed. |
 | **Verification contract** | `verification-contract.json`: checks of the form `{command, expectedExitCode}` that an orchestrator can run to require evidence before a task counts as done. |
 
 ## Context map
@@ -49,8 +52,8 @@ flowchart LR
   end
   L[Static auditor report<br/>saas-audit JSON]
 
-  A -->|statements| C
-  C -->|catalog snapshot| B
+  A -->|statements, run as the migrator| C
+  C -->|catalog snapshot, read by the admin| B
   B --> D
   E -->|probes| C
   C -->|observations| F

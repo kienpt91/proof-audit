@@ -11,3 +11,5 @@ The model used for probing is not the parsed one. After the migrations ran, the 
 ## Consequences
 
 Policy expressions come back normalised by `pg_get_expr` (`( SELECT auth.uid() AS uid)`), so the expression analysis (always true/false, caller-bound columns) is tested on both hand-written and normalised text.
+
+The catalog query is sent by the tool in a session whose `search_path` is `pg_catalog`, uses only qualified names, and skips only the database's own schemas and the shim's `auth.users`: extension membership, schema names such as `extensions`, and dynamic creation no longer hide a table ([0011](0011-trust-domains-for-the-verdicts.md)). Types that are not in `pg_catalog` are printed schema-qualified (`public.mood`); only `extensions.citext` is read as text.

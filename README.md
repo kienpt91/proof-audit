@@ -66,14 +66,21 @@ proof-audit rls <migrations-dir | file.sql...> [options]
   --from-audit <file>       report of the saas-audit static auditor (see below)
   --no-fix                  do not propose or verify a fix
   --fail-on <proven|none>   exit 1 when something was proven (default) or never
-  --database-url <url>      a Postgres server you started on this machine (loopback only)
+  --database-url <url>      a Postgres server you started on this machine (loopback only);
+                            the URL is visible in the process list, so prefer:
+  --database-url-env <NAME> read that URL from the environment variable NAME
+  --yes-this-is-throwaway   allow a server that holds databases besides postgres
 
-proof-audit verify <proofs.jsonl> [--against <migrations...>] [--root <dir>] [--database-url <url>]
+proof-audit verify <proofs.jsonl> [--against <migrations...>] [--root <dir>] [--database-url ... | --database-url-env ...]
 ```
 
-Exit codes: `0` nothing proven / evidence reproduces, `1` holes proven / evidence not reproduced, `2` usage or invalid input, `3` the sandbox could not run, the run was incomplete (a cap was hit), or the inputs changed since the evidence was recorded.
+Exit codes: `0` nothing proven / evidence reproduces, `1` holes proven / evidence not reproduced, `2` usage or invalid input, `3` the sandbox could not run, the run was incomplete (a cap was hit), or the inputs changed since the evidence was recorded, `4` **INTEGRITY_VIOLATION**: the migrations touched, or tried to touch, the test environment the verdicts depend on, so nothing can be trusted (every finding is then INCONCLUSIVE and no fix is proposed).
 
-**Safety boundary.** The tool connects only to a database it creates itself in a container with no network, or to a PostgreSQL server on this machine's loopback interface (`--database-url`, also `PROOF_AUDIT_DATABASE_URL`). Any other host is refused in the domain layer before a socket exists. It makes no network call during analysis, reads no secrets or `.env` files, and uses synthetic seed data only. The migrations are treated as hostile input; see [SECURITY.md](SECURITY.md).
+**Safety boundary.** The tool connects only to a database it creates itself in a container with no network, or to a PostgreSQL server on this machine's loopback interface that you name explicitly (`--database-url` or `--database-url-env`; it is never picked up from the environment on its own). Any other host is refused in the domain layer before a socket exists, and so is a docker daemon that is not on this machine. It makes no network call during analysis, reads no secrets or `.env` files, and uses synthetic seed data only.
+
+**Loopback is not proof of a throwaway.** An SSH tunnel, a port-forward or a published docker port on 127.0.0.1 can lead to a real server. In loopback mode the tool prints the server it is using, refuses one that holds databases other than `postgres` unless you pass `--yes-this-is-throwaway`, and runs everything from the project as a role it creates for the run (no superuser rights, so no `COPY ... PROGRAM`, server-side files, `ALTER SYSTEM` or untrusted extensions); the roles and the database are dropped afterwards. It still needs a superuser connection to create them: give it a server you started for testing.
+
+**The migrations are hostile input, and cannot forge a verdict.** They run as a non-superuser like Supabase's `postgres` role, no helper function lives in the database for them to replace, probe sessions are pinned against `ALTER DATABASE ... SET`, and the platform is fingerprinted before the migrations, after them and after the probes. What this does and does not guarantee is in [SECURITY.md](SECURITY.md) and [ADR 0011](docs/adr/0011-trust-domains-for-the-verdicts.md).
 
 ## A real run
 
@@ -644,6 +651,40 @@ No problem could be reproduced.
 ...
 ```
 
+## Hostile migrations
+
+`examples/hostile-app` is a migration set that tries to make the audit report "all clear" for a table that is open to everyone: it replaces the function that used to decide a verdict, redefines `auth.uid()`, repoints the database's `search_path`, creates an event trigger and asks the server to run a program. Every attempt is refused by the database, none changes a verdict, and the run says so (exit code 4):
+
+```console
+$ scripts/run-contained.sh rls examples/hostile-app/supabase/migrations
+SECURITY REPORT (plain language)
+================================
+Tool: proof-audit 0.1.0
+Checked: 1 table or view
+Input files read: 1
+Database used: a throwaway PostgreSQL database (version 16.14 (Debian 16.14-1.pgdg13+1), local connection loopback)
+Run complete: yes
+Tests run: 13 (9 showed a real problem)
+RESULT: 0 PROVEN, 0 SUSPECTED, 1 INCONCLUSIVE, 0 CLEAN.
+No problem was proven. 1 more need a look: SUSPECTED and INCONCLUSIVE items are NOT proven and carry low confidence.
+
+INTEGRITY_VIOLATION: DO NOT TRUST THESE RESULTS
+-----------------------------------------------
+The migrations touched, or tried to touch, the test environment that every verdict depends on (the platform functions and roles, the settings that decide how queries are resolved, the tool's own objects). Nothing can be concluded from this run: every table and view is reported as could not be judged, and no fix is proposed.
+
+- CREATE FUNCTION proof_audit.run_probe (redefines-platform-object; the database refused it) at examples/hostile-app/supabase/migrations/20260108000000_init.sql:5
+- mentions the tool's own schema proof_audit (targets-tool-internals; the database refused it) at examples/hostile-app/supabase/migrations/20260108000000_init.sql:5
+- CREATE FUNCTION auth.uid (redefines-platform-object; the database refused it) at examples/hostile-app/supabase/migrations/20260108000000_init.sql:9
+- ALTER DATABASE ... SET search_path (alters-protected-setting; the database refused it) at examples/hostile-app/supabase/migrations/20260108000000_init.sql:10
+- CREATE EVENT TRIGGER (event-trigger; the database refused it) at examples/hostile-app/supabase/migrations/20260108000000_init.sql:13
+
+WHAT WE FOUND
+...
+exit code: 4
+```
+
+The proofs in the report still carry what the database answered (the table is open: `9 showed a real problem`), but because the migrations touched the test environment the tool refuses to call anything PROVEN or CLEAN. The design, and what it does and does not guarantee, is in [ADR 0011](docs/adr/0011-trust-domains-for-the-verdicts.md).
+
 ## Integration with the static auditor
 
 `--from-audit <saas-audit.json>` reads the JSON report of the author's static auditor `saas-rescue-audit` (`saas-audit --json`; unknown keys and older versions are tolerated), probes the tables it named first, and attaches a proof status to each of its Supabase findings: PROVEN, could not be reproduced, or static only. The finding is judged by the probes it is *about*: the static auditor flagged `Owners can edit documents` (an update policy with `with check (true)`), and the database refused the update and re-assign probes for it (another policy masks the check), so that finding is shown as *could not be reproduced*, with a note that other attacks on `documents` were proven. Findings that are not about RLS (secrets, webhooks, ...) are counted as out of scope. The real report for the example app is `examples/vulnerable-app/saas-audit.json`, and its cross-check is the "STATIC AUDITOR CROSS-CHECK" section of the report above.
@@ -678,15 +719,15 @@ No problem could be reproduced.
 }
 ```
 
-`proof-audit verify <proofs.jsonl>` exits 0 only if every recorded expectation holds: the recorded inputs are unchanged (otherwise exit 3, "stale"), the database gives the same answer to every recorded probe (compared by content hash), and the recorded fix still closes the recorded holes. With `--against <migrations>` it re-runs the recorded probes against other migrations and exits 0 only when every previously proven table is now verified. The decoder re-computes every hash, and the contract decoder rejects any command that is not a plain `proof-audit verify ...` invocation.
+`proof-audit verify <proofs.jsonl>` exits 0 only if every recorded expectation holds: the recorded inputs are unchanged (otherwise exit 3, "stale"), the database gives the same answer to every recorded probe (compared by content hash), and the recorded fix still closes the recorded holes. The file is not trusted to carry SQL: the hashes are unkeyed, so `verify` regenerates the probes and the fix from the migrations with its own planner, refuses (exit 2) any file whose SQL, claims or fix differ, and never executes what the file says. With `--against <migrations>` it re-runs the recorded probes against other migrations and exits 0 only when every previously proven table is now verified. The decoder re-computes every hash, and the contract decoder rejects any command that is not a plain `proof-audit verify ...` invocation.
 
 ## How it works
 
 1. **Read** the migrations with a purpose-built tolerant SQL reader (comments, dollar quotes, quoted identifiers, `BEGIN ATOMIC`, psql meta-commands). Unsupported statements are skipped with a warning and never abort a run.
-2. **Build** a sandbox: the Supabase shim (roles `anon`, `authenticated`, `service_role`; `auth.users`; `auth.uid()`, `auth.role()`, `auth.jwt()` and `auth.email()` reading `request.jwt.claims`; Supabase's default privileges), then the migrations, each statement on its own with failures recorded.
+2. **Build** a sandbox: the admin (superuser, only runs the tool's own statements) provisions the Supabase platform (roles `anon`, `authenticated`, `service_role`; `auth.users`; `auth.uid()`, `auth.role()`, `auth.jwt()` and `auth.email()` reading `request.jwt.claims`; Supabase's default privileges) and fingerprints it; then the **migrator**, a non-superuser like Supabase's `postgres`, applies the migrations, each statement on its own with failures recorded.
 3. **Model** the schema from the database's own catalogs (policies, privileges, columns, views), detect owner columns with explainable heuristics (`user_id`, `owner_id`, `created_by`, `tenant_id`, `org_id`, references to `auth.users`, defaults of `auth.uid()`).
 4. **Seed** one row per synthetic user in every table from column types, names and `CHECK` constraints. A table that cannot be seeded is recorded with the database's error and its probes are INCONCLUSIVE.
-5. **Probe** each table and view as `anon` and as user A (`SET LOCAL ROLE` plus `request.jwt.claims`), in a transaction that is always rolled back; classify; propose a fix; **re-run the same probes** on a fresh copy with the fix applied.
+5. **Probe** each table and view as `anon` and as user A (`SET LOCAL ROLE` plus `request.jwt.claims`), from a session of a third role, in a sub-transaction that is always rolled back; check the platform fingerprint again; classify; propose a fix; **re-run the same probes** on a fresh copy with the fix applied.
 
 The design records are in [docs/adr](docs/adr) and the vocabulary and context map in [docs/domain.md](docs/domain.md). The code is layered `domain` (pure) ← `application` ← `infrastructure` ← `composition`, and `test/architecture` fails the build when an import points the wrong way or the pure layers touch the clock, randomness or the process.
 
@@ -696,25 +737,27 @@ The design records are in [docs/adr](docs/adr) and the vocabulary and context ma
 
 | Suite | Where | Cases | Needs |
 | --- | --- | --- | --- |
-| domain unit and property tests | `test/domain` | 1,051 | nothing |
-| application tests with an in-memory fake database | `test/application` | 112 | nothing |
-| adapter tests (fake docker, fake transport, files, args) and contract suite | `test/infrastructure`, `test/contract` | 88 | nothing |
-| architecture (dependency rule) | `test/architecture` | 71 | nothing |
-| command line end to end, in-memory | `test/e2e` | 25 | nothing |
-| **offline total** | `npm test` | **1,347** | |
-| real PostgreSQL 16.14 (analysis, sandbox, CLI) | `test/integration` | 48 | `scripts/integration.sh` |
-| default container mode for real | `test/smoke` | 2 | `scripts/docker-smoke.sh` |
+| domain unit and property tests | `test/domain` | 1,089 | nothing |
+| application tests with an in-memory fake database | `test/application` | 136 | nothing |
+| adapter tests (fake docker, fake transport, statement builders, files, args, cleanup) and contract suite | `test/infrastructure`, `test/contract` | 126 | nothing |
+| architecture (dependency rule) | `test/architecture` | 76 | nothing |
+| command line end to end, in-memory | `test/e2e` | 34 | nothing |
+| **offline total** | `npm test` | **1,461** | |
+| real PostgreSQL 16.14: analysis (23), sandbox (16), CLI (12), **hostile migrations (43)** | `test/integration` | 94 | `scripts/integration.sh` |
+| default container mode for real, including hostile migrations | `test/smoke` | 3 | `scripts/docker-smoke.sh` |
 
 (Parameterised tests count once per row.) Offline coverage:
 
 | Layer | Statements | Lines | Branches |
 | --- | --- | --- | --- |
-| `src/domain` | 95.25% | 97.39% | 88.85% |
-| `src/application` | 96.05% | 97.06% | 82.02% |
-| `src/infrastructure` | 86.26% | 87.59% | 84.31% |
-| **overall** | **93.89%** | **95.76%** | **87.62%** |
+| `src/domain` | 95.33% | 97.47% | 89.05% |
+| `src/application` | 96.20% | 97.50% | 83.59% |
+| `src/infrastructure` | 87.50% | 88.42% | 86.31% |
+| **overall** | **94.05%** | **95.80%** | **88.08%** |
 
-The infrastructure layer is lower offline because the `pg` transport and the URL provider only run against a real server. The integration suite, measured on its own, covers 71.3% of lines overall (`pg-transport.ts` 84%, `sandbox.ts` 89%, `harness.ts` 100%). Integration coverage is reported separately: `scripts/integration.sh --coverage`.
+The infrastructure layer is lower offline because the `pg` transport and the URL provider only run against a real server. The integration suite, measured on its own, covers 73.0% of lines overall (`pg-transport.ts` 92%, `sandbox.ts` 92%, `statements.ts` 100%, `catalog-sql.ts` 100%). Integration coverage is reported separately: `scripts/integration.sh --coverage`.
+
+The hostile-migration tests (`test/integration/hostile.integration.test.ts`) build each attack at run time: a replaced probe function, shadowed built-ins and a repointed `search_path`, direct catalog writes, a redefined `auth.uid()`, event triggers, `ALTER SYSTEM`, `COPY ... PROGRAM`, server-side files, untrusted extensions, a table hidden through `ALTER EXTENSION`, rules and triggers that change probe results, a trigger that tries to forge the reply, and platform tampering done by a real superuser mid-run. Each was first reproduced as a false CLEAN, a hidden table or a privileged statement that ran, and now produces the observed verdict, a refusal, or an INTEGRITY_VIOLATION.
 
 The integration suite uses the official `postgres` image pinned by digest (16.14, created 2026-08-05; the moving `postgres:16` tag was republished after the dependency cutoff and is not used). `scripts/integration.sh` starts it on a user-defined internal docker network and runs the tests in a Node container that shares its network namespace, so the database is at `127.0.0.1` and the loopback rule applies to the tests ([ADR 0010](docs/adr/0010-integration-harness.md)). Passwords are generated at run time and never committed.
 
@@ -736,7 +779,9 @@ npm run build
 - **Scope of probes.** Table-level privileges, not column-level ones. Materialized views, functions called as RPC, `FORCE ROW LEVEL SECURITY` edge cases and tables created by role-specific default privileges are not probed. A table without an owner column gets anonymous probes only.
 - **A policy-admitted insert that a constraint stops is still proof**, because PostgreSQL checks row level security before table constraints (confirmed against the pinned image); the reason in the proof says so.
 - **The fix is a starting point.** Policies are written for the primary owner column, with a membership table for tenant-style columns when one exists; otherwise the table is listed as needing your decision. Anything it generates is checked only against synthetic users.
-- **Loopback mode is only as isolated as your server.** The default mode has no network at all; with `--database-url` you provide a throwaway server, and the tool creates roles `anon`, `authenticated` and `service_role` in it if they are missing.
+- **Loopback mode is only as isolated as your server.** The default mode has no network at all; with `--database-url` you provide a throwaway server, and the tool creates roles `anon`, `authenticated` and `service_role` in it if they are missing, plus two roles per run that are dropped afterwards. In the container the migration role is named `postgres`, as on Supabase; in loopback mode it has a random name, so migrations that name the role `postgres` (`ALTER ... OWNER TO postgres`) behave differently there.
+- **Migrations that redefine the platform are not analysed.** Redefining `auth.uid()`, creating event triggers, changing `search_path` or `session_replication_role` of the database or roles, writing the catalogs and similar statements are refused by the database and reported as INTEGRITY_VIOLATION; every finding of that run is INCONCLUSIVE.
+- **A project's own objects can notice the synthetic users.** A function or view can read `request.jwt.claims` and behave differently for `aaaaaaaa-...` than for a real user. The verdict is then correct for the synthetic identity only.
 
 ## Roadmap (not implemented)
 

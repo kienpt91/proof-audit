@@ -13,3 +13,5 @@ The brief asked for the test process to run in a Node container, reaching a pinn
 ## Consequences
 
 The loopback-only rule has no test-only escape hatch. `scripts/run-contained.sh` uses the same layout to run the tool itself without Node or a database on the host. CI runs the integration suite against a pinned service container with trust authentication on the runner.
+
+The suite passes the server to the tool the way a user should: through `PROOF_AUDIT_DATABASE_URL` read by the tests' own support code, and through `--database-url-env` for the CLI. The tool itself never reads that variable on its own initiative.

@@ -14,7 +14,7 @@ The brief allowed either the `pg` client or driving `psql` through the docker CL
 
 ## Decision
 
-Option 3. `PostgresSandbox` implements the `Sandbox` port once, on top of `SqlTransport` (`query` for statements returning one text value, `execute` for raw DDL). Every operation is a single `SELECT` against small PL/pgSQL functions in schema `proof_audit` (`try_exec`, `try_first`, `scalar`, `run_probe`, `catalog`), so both transports send and parse the same JSON. `DockerPsqlTransport` sends the script on stdin of `docker exec -i ... psql` over the container's unix socket; `PgTransport` uses `pg` against a validated loopback endpoint. The default (container) mode never touches `pg` at all.
+Option 3. `PostgresSandbox` implements the `Sandbox` port once, on top of `SqlTransport.run(session, steps)`: a session names the database, the role to log in as (admin, migrator or prober) and the pinned settings. Every operation is an anonymous `DO` block built by the tool plus one `SELECT` that reads its reply, so both transports send and parse the same JSON, and nothing is stored in the database ([0011](0011-trust-domains-for-the-verdicts.md)). `DockerPsqlTransport` sends the script on stdin of `docker exec -i ... psql` over the container's unix socket; `PgTransport` uses `pg` against a validated loopback endpoint. The default (container) mode never touches `pg` at all.
 
 The only runtime dependency is `pg` (exact pin, published before the cutoff), used by the loopback transport.
 
