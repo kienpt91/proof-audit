@@ -149,6 +149,30 @@ export interface AnalysisSummary {
   readonly probesProven: number;
 }
 
+export type IntegrityKind =
+  | "platform-changed"
+  | "targets-tool-internals"
+  | "redefines-platform-object"
+  | "event-trigger"
+  | "alters-protected-setting"
+  | "catalog-write";
+
+/** Something that touched, or tried to touch, the test environment the verdicts depend on. */
+export interface IntegrityViolation {
+  readonly kind: IntegrityKind;
+  readonly detail: string;
+  readonly file: string | null;
+  readonly line: number | null;
+  /** `blocked`: the database refused the statement; `succeeded`: it ran; `state-changed`: a fingerprint differs; `unknown`: not applied (no outcome). */
+  readonly outcome: "blocked" | "succeeded" | "state-changed" | "unknown";
+}
+
+export interface IntegrityReport {
+  /** `INTEGRITY_VIOLATION` when the migrations touched or tried to touch the test environment: every finding is then INCONCLUSIVE. */
+  readonly status: "INTACT" | "INTEGRITY_VIOLATION";
+  readonly violations: readonly IntegrityViolation[];
+}
+
 export interface AnalysisReport {
   readonly tool: { readonly name: string; readonly version: string };
   readonly inputs: readonly InputFileRecord[];
