@@ -32,7 +32,7 @@ trap cleanup EXIT INT TERM
 
 docker volume create "$vol" >/dev/null
 docker run --rm -u 0 -v "$vol:/nm" "$node_image" chown "$(id -u):$(id -g)" /nm >/dev/null
-if [ ! -f "$repo/dist/bin.js" ] || [ "$repo/package-lock.json" -nt "$repo/dist/bin.js" ]; then
+if [ ! -f "$repo/dist/bin.js" ] || [ "$repo/package-lock.json" -nt "$repo/dist/bin.js" ] || ! docker run --rm -v "$vol:/nm:ro" "$node_image" test -d /nm/pg; then
   docker run --rm --user "$(id -u):$(id -g)" --cap-drop ALL --security-opt no-new-privileges \
     -e HOME=/tmp/home -e npm_config_cache=/tmp/npm-cache -e npm_config_update_notifier=false \
     -v "$repo:/work" -v "$vol:/work/node_modules" -w /work "$node_image" \

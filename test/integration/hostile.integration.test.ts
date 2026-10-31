@@ -339,3 +339,18 @@ describe.skipIf(!haveDatabase)("evidence that carries SQL is not executed", () =
     expect(statements.some((s) => s.includes("PROGRAM"))).toBe(false);
   });
 });
+
+describe.skipIf(!haveDatabase)("examples/hostile-app", () => {
+  it("is refused on every count, changes no verdict and ends INTEGRITY_VIOLATION", async () => {
+    const { loadSqlInputs } = await import("../../src/infrastructure/fs/files.js");
+    const { files } = await loadSqlInputs(["examples/hostile-app/supabase/migrations"], process.cwd());
+    const r = await analyze(files);
+    expect(r.integrity.status).toBe("INTEGRITY_VIOLATION");
+    expect(new Set(kinds(r))).toEqual(new Set(["redefines-platform-object", "targets-tool-internals", "alters-protected-setting", "event-trigger"]));
+    expect(r.integrity.violations.every((v) => v.outcome === "blocked")).toBe(true);
+    expect(r.migrationErrors.map((e) => e.line)).toEqual([5, 9, 10, 13, 14]);
+    expect(verdict(r, "public.customers/anon-read")).toBe("PROVEN_VULNERABLE");
+    expect(r.findings.map((f) => f.tier)).toEqual(["INCONCLUSIVE"]);
+    expect(r.fix).toBeNull();
+  });
+});
