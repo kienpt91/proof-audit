@@ -1,0 +1,592 @@
+{
+  "tool": {
+    "name": "proof-audit",
+    "version": "0.1.0"
+  },
+  "inputs": [
+    {
+      "bytes": 1204,
+      "path": "supabase/migrations/001_init.sql",
+      "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    },
+    {
+      "bytes": 388,
+      "path": "supabase/migrations/002_profiles.sql",
+      "sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+    }
+  ],
+  "environment": {
+    "image": "postgres:16.3@sha256:0123456789abcdef",
+    "mode": "docker",
+    "postgresVersion": "16.3"
+  },
+  "complete": true,
+  "summary": {
+    "clean": 2,
+    "inconclusive": 1,
+    "probesProven": 4,
+    "probesRun": 8,
+    "proven": 3,
+    "subjects": 7,
+    "suspected": 1
+  },
+  "findings": [
+    {
+      "attackerCan": "Anyone with the public key can read, add and change every note.",
+      "causes": [
+        {
+          "code": "rls-disabled",
+          "text": "Row level security is switched off on public.notes, so the public key can read and write every row."
+        }
+      ],
+      "fixNote": "Switch on row level security and let users touch only their own notes.",
+      "fixStatus": "verified",
+      "id": "rls:public.notes",
+      "inconclusive": [],
+      "notReproduced": [
+        "public.notes/cross-delete"
+      ],
+      "provenBy": [
+        "public.notes/anon-read",
+        "public.notes/anon-insert"
+      ],
+      "severity": "critical",
+      "subject": "public.notes",
+      "subjectKind": "table",
+      "tier": "PROVEN",
+      "title": "Notes are open to everyone"
+    },
+    {
+      "attackerCan": "Any signed-in user can read the profiles of every other user.",
+      "causes": [
+        {
+          "code": "policy-always-true",
+          "text": "The policy \"profiles_read\" allows every row."
+        },
+        {
+          "code": "owner-not-compared",
+          "text": "No policy compares user_id with the signed-in user."
+        }
+      ],
+      "fixNote": "The proposed policy still lets every signed-in user read every profile.",
+      "fixStatus": "still-vulnerable",
+      "id": "rls:public.profiles",
+      "inconclusive": [],
+      "notReproduced": [
+        "public.profiles/anon-read"
+      ],
+      "provenBy": [
+        "public.profiles/cross-read"
+      ],
+      "severity": "high",
+      "subject": "public.profiles",
+      "subjectKind": "table",
+      "tier": "PROVEN",
+      "title": "Any signed-in user can read all profiles"
+    },
+    {
+      "attackerCan": "Anyone with the public key can read e-mail addresses through the view.",
+      "causes": [
+        {
+          "code": "view-bypasses-rls",
+          "text": "The view runs with its owner's rights, so row level security does not apply."
+        }
+      ],
+      "fixNote": "Decide whether the view should run with the rights of the caller.",
+      "fixStatus": "needs-decision",
+      "id": "rls:public.v_user_emails",
+      "inconclusive": [],
+      "notReproduced": [],
+      "provenBy": [
+        "public.v_user_emails/view-read-anon"
+      ],
+      "severity": "medium",
+      "subject": "public.v_user_emails",
+      "subjectKind": "view",
+      "tier": "PROVEN",
+      "title": "A view exposes e-mail addresses"
+    },
+    {
+      "attackerCan": "A signed-in user might read messages sent to someone else.",
+      "causes": [
+        {
+          "code": "owner-not-checked",
+          "text": "The policy \"msg_read\" checks only that the user is signed in."
+        }
+      ],
+      "fixNote": "Decide who may read a message: sender, receiver or both.",
+      "fixStatus": "needs-decision",
+      "id": "rls:public.messages",
+      "inconclusive": [],
+      "notReproduced": [],
+      "provenBy": [],
+      "severity": "medium",
+      "subject": "public.messages",
+      "subjectKind": "table",
+      "tier": "SUSPECTED",
+      "title": "Messages may be readable by other users"
+    },
+    {
+      "attackerCan": "Unknown: the test could not run.",
+      "causes": [],
+      "fixNote": "Fix the seeding problem and run again.",
+      "fixStatus": "not-proposed",
+      "id": "rls:public.audit_log",
+      "inconclusive": [
+        {
+          "id": "public.audit_log/anon-read",
+          "reason": "the table could not be seeded"
+        }
+      ],
+      "notReproduced": [],
+      "provenBy": [],
+      "severity": "low",
+      "subject": "public.audit_log",
+      "subjectKind": "table",
+      "tier": "INCONCLUSIVE",
+      "title": "The audit log could not be tested"
+    },
+    {
+      "attackerCan": "Nothing found.",
+      "causes": [],
+      "fixNote": "",
+      "fixStatus": "not-needed",
+      "id": "rls:public.orders",
+      "inconclusive": [],
+      "notReproduced": [],
+      "provenBy": [],
+      "severity": "info",
+      "subject": "public.orders",
+      "subjectKind": "table",
+      "tier": "CLEAN",
+      "title": "Row level security on, owner checked"
+    },
+    {
+      "attackerCan": "Nothing found.",
+      "causes": [],
+      "fixNote": "",
+      "fixStatus": "not-needed",
+      "id": "rls:public.settings",
+      "inconclusive": [],
+      "notReproduced": [],
+      "provenBy": [],
+      "severity": "info",
+      "subject": "public.settings",
+      "subjectKind": "table",
+      "tier": "CLEAN",
+      "title": "Row level security on, no public access"
+    }
+  ],
+  "proofs": [
+    {
+      "actor": "anon",
+      "claims": "{\"role\":\"anon\"}",
+      "command": "select",
+      "hash": "ab9e3fad3ba4925296a9861ce7f7c8db689d4986b5c6a7b14327aad2e8fce4af",
+      "id": "public.notes/anon-read",
+      "intent": "exploit",
+      "kind": "anon-read",
+      "observation": {
+        "rows": 3,
+        "status": "rows"
+      },
+      "phase": "before",
+      "reason": "The anonymous role read seeded rows.",
+      "role": "anon",
+      "sql": "select * from public.notes",
+      "subject": "public.notes",
+      "subjectKind": "table",
+      "targetRows": 3,
+      "title": "Anonymous visitor reads rows",
+      "verdict": "PROVEN_VULNERABLE"
+    },
+    {
+      "actor": "anon",
+      "claims": "{\"role\":\"anon\"}",
+      "command": "insert",
+      "hash": "621b56d24dd820388aedd9ff6a23b82b2a51d00c71f93fe275dff60677881bfb",
+      "id": "public.notes/anon-insert",
+      "intent": "exploit",
+      "kind": "anon-insert",
+      "observation": {
+        "rows": 1,
+        "status": "rows"
+      },
+      "phase": "before",
+      "reason": "The anonymous role inserted a row.",
+      "role": "anon",
+      "sql": "insert into public.notes (id, user_id, body)\nvalues (gen_random_uuid(), '00000000-0000-4000-8000-00000000000a', 'x')",
+      "subject": "public.notes",
+      "subjectKind": "table",
+      "targetRows": null,
+      "title": "Anonymous visitor inserts a row",
+      "verdict": "PROVEN_VULNERABLE"
+    },
+    {
+      "actor": "user-a",
+      "claims": "{\"role\":\"authenticated\",\"sub\":\"00000000-0000-4000-8000-00000000000a\"}",
+      "command": "delete",
+      "hash": "970673e4f8f80054947e76a19dd0f3ad4b0253941701e22d3abdde43f5d30a62",
+      "id": "public.notes/cross-delete",
+      "intent": "exploit",
+      "kind": "cross-delete",
+      "observation": {
+        "rows": 0,
+        "status": "rows"
+      },
+      "phase": "before",
+      "reason": "No rows of the other user were deleted.",
+      "role": "authenticated",
+      "sql": "delete from public.notes where user_id = '00000000-0000-4000-8000-00000000000b'",
+      "subject": "public.notes",
+      "subjectKind": "table",
+      "targetRows": 2,
+      "title": "Signed-in user deletes another user's rows",
+      "verdict": "NOT_REPRODUCED"
+    },
+    {
+      "actor": "user-a",
+      "claims": "{\"role\":\"authenticated\",\"sub\":\"00000000-0000-4000-8000-00000000000a\"}",
+      "command": "select",
+      "hash": "7599b814dc869caa56cba37e1d1768f5b21c17056b6d4e1d4a3a672a3f941de1",
+      "id": "public.notes/own-read",
+      "intent": "legitimate",
+      "kind": "own-read",
+      "observation": {
+        "rows": 2,
+        "status": "rows"
+      },
+      "phase": "before",
+      "reason": "The user can read their own rows.",
+      "role": "authenticated",
+      "sql": "select * from public.notes where user_id = '00000000-0000-4000-8000-00000000000a'",
+      "subject": "public.notes",
+      "subjectKind": "table",
+      "targetRows": 2,
+      "title": "Signed-in user reads own rows",
+      "verdict": "ACCESS_OK"
+    },
+    {
+      "actor": "user-a",
+      "claims": "{\"role\":\"authenticated\",\"sub\":\"00000000-0000-4000-8000-00000000000a\"}",
+      "command": "select",
+      "hash": "d5200c7a09d8482d5dc322b3bbb9e713a27f6ec696311c775781a738f16878be",
+      "id": "public.profiles/cross-read",
+      "intent": "exploit",
+      "kind": "cross-read",
+      "observation": {
+        "rows": 4,
+        "status": "rows"
+      },
+      "phase": "before",
+      "reason": "The signed-in user read rows owned by someone else.",
+      "role": "authenticated",
+      "sql": "select * from public.profiles",
+      "subject": "public.profiles",
+      "subjectKind": "table",
+      "targetRows": 2,
+      "title": "Signed-in user reads another user's rows",
+      "verdict": "PROVEN_VULNERABLE"
+    },
+    {
+      "actor": "anon",
+      "claims": "{\"role\":\"anon\"}",
+      "command": "select",
+      "hash": "25f7e63f4f9d4497633f28b37220d1b0f72ddb8a34362a29a35f3a981901373c",
+      "id": "public.profiles/anon-read",
+      "intent": "exploit",
+      "kind": "anon-read",
+      "observation": {
+        "message": "permission denied for table profiles",
+        "sqlstate": "42501",
+        "status": "error"
+      },
+      "phase": "before",
+      "reason": "The database refused the anonymous read.",
+      "role": "anon",
+      "sql": "select * from public.profiles",
+      "subject": "public.profiles",
+      "subjectKind": "table",
+      "targetRows": null,
+      "title": "Anonymous visitor reads rows",
+      "verdict": "NOT_REPRODUCED"
+    },
+    {
+      "actor": "anon",
+      "claims": "{\"role\":\"anon\"}",
+      "command": "select",
+      "hash": "34c9cb19c4fc044bd4a552c2e4d3b2f85062999d0a1fafecd619815b48e446c1",
+      "id": "public.v_user_emails/view-read-anon",
+      "intent": "exploit",
+      "kind": "view-read-anon",
+      "observation": {
+        "rows": 2,
+        "status": "rows"
+      },
+      "phase": "before",
+      "reason": "The anonymous role read rows through the view.",
+      "role": "anon",
+      "sql": "select * from public.v_user_emails",
+      "subject": "public.v_user_emails",
+      "subjectKind": "view",
+      "targetRows": null,
+      "title": "Anonymous visitor reads the view",
+      "verdict": "PROVEN_VULNERABLE"
+    },
+    {
+      "actor": "anon",
+      "claims": "{\"role\":\"anon\"}",
+      "command": "select",
+      "hash": "107e027b56c3330f338180c65df07a959cb6c25b550fae116fde551e42a13bbf",
+      "id": "public.audit_log/anon-read",
+      "intent": "exploit",
+      "kind": "anon-read",
+      "observation": {
+        "reason": "the table could not be seeded",
+        "status": "not-run"
+      },
+      "phase": "before",
+      "reason": "No rows existed to read.",
+      "role": "anon",
+      "sql": "select * from public.audit_log",
+      "subject": "public.audit_log",
+      "subjectKind": "table",
+      "targetRows": null,
+      "title": "Anonymous visitor reads rows",
+      "verdict": "INCONCLUSIVE"
+    }
+  ],
+  "seeding": [
+    {
+      "reason": "column details has no default and is not null",
+      "rowsUserA": 0,
+      "rowsUserB": 0,
+      "status": "failed",
+      "table": "public.audit_log"
+    }
+  ],
+  "fix": {
+    "covered": [
+      "public.notes",
+      "public.profiles"
+    ],
+    "needsDecision": [
+      {
+        "reason": "Only you know whether receivers may read messages.",
+        "subject": "public.messages"
+      },
+      {
+        "reason": "Changing the view may break pages that rely on it.",
+        "subject": "public.v_user_emails"
+      }
+    ],
+    "sql": "-- public.notes: only the owner may touch a note\nalter table public.notes enable row level security;\ncreate policy \"notes_owner\" on public.notes\n  for all to authenticated\n  using ((select auth.uid()) = user_id)\n  with check ((select auth.uid()) = user_id);",
+    "statements": [
+      "alter table public.notes enable row level security",
+      "create policy \"notes_owner\" on public.notes for all to authenticated using ((select auth.uid()) = user_id) with check ((select auth.uid()) = user_id)"
+    ]
+  },
+  "verification": {
+    "after": [
+      {
+        "actor": "anon",
+        "claims": "{\"role\":\"anon\"}",
+        "command": "select",
+        "hash": "1f18967d7a5173be19ac05007a361f6c4c52d2618c78ff5bba3057171732e9a1",
+        "id": "public.notes/anon-read",
+        "intent": "exploit",
+        "kind": "anon-read",
+        "observation": {
+          "rows": 0,
+          "status": "rows"
+        },
+        "phase": "after",
+        "reason": "The anonymous role read nothing.",
+        "role": "anon",
+        "sql": "select * from public.notes",
+        "subject": "public.notes",
+        "subjectKind": "table",
+        "targetRows": 3,
+        "title": "Anonymous visitor reads rows",
+        "verdict": "NOT_REPRODUCED"
+      },
+      {
+        "actor": "anon",
+        "claims": "{\"role\":\"anon\"}",
+        "command": "insert",
+        "hash": "bc97f4825e651c4085082dd859adb2b9fb843244e92d5b73a3219e536b8d2312",
+        "id": "public.notes/anon-insert",
+        "intent": "exploit",
+        "kind": "anon-insert",
+        "observation": {
+          "message": "new row violates row-level security policy for table \"notes\"",
+          "sqlstate": "42501",
+          "status": "error"
+        },
+        "phase": "after",
+        "reason": "The database refused the insert.",
+        "role": "anon",
+        "sql": "insert into public.notes (id, user_id, body)\nvalues (gen_random_uuid(), '00000000-0000-4000-8000-00000000000a', 'x')",
+        "subject": "public.notes",
+        "subjectKind": "table",
+        "targetRows": null,
+        "title": "Anonymous visitor inserts a row",
+        "verdict": "NOT_REPRODUCED"
+      },
+      {
+        "actor": "user-a",
+        "claims": "{\"role\":\"authenticated\",\"sub\":\"00000000-0000-4000-8000-00000000000a\"}",
+        "command": "select",
+        "hash": "d7fdc0f1be2d56844e4bccea7effadfe97ae226fc1c6a9cdb83368a88f21b37f",
+        "id": "public.notes/own-read",
+        "intent": "legitimate",
+        "kind": "own-read",
+        "observation": {
+          "rows": 2,
+          "status": "rows"
+        },
+        "phase": "after",
+        "reason": "The user can still read their own rows.",
+        "role": "authenticated",
+        "sql": "select * from public.notes where user_id = '00000000-0000-4000-8000-00000000000a'",
+        "subject": "public.notes",
+        "subjectKind": "table",
+        "targetRows": 2,
+        "title": "Signed-in user reads own rows",
+        "verdict": "ACCESS_OK"
+      },
+      {
+        "actor": "user-a",
+        "claims": "{\"role\":\"authenticated\",\"sub\":\"00000000-0000-4000-8000-00000000000a\"}",
+        "command": "select",
+        "hash": "0b1fa70e3ebf243172e152ee0493967cef9ac60ae1d3109f8ed77d2c802be029",
+        "id": "public.profiles/cross-read",
+        "intent": "exploit",
+        "kind": "cross-read",
+        "observation": {
+          "rows": 4,
+          "status": "rows"
+        },
+        "phase": "after",
+        "reason": "The signed-in user still reads rows owned by someone else.",
+        "role": "authenticated",
+        "sql": "select * from public.profiles",
+        "subject": "public.profiles",
+        "subjectKind": "table",
+        "targetRows": 2,
+        "title": "Signed-in user reads another user's rows",
+        "verdict": "PROVEN_VULNERABLE"
+      }
+    ],
+    "applyErrors": [],
+    "status": "PARTIAL",
+    "subjects": [
+      {
+        "broken": [],
+        "closed": [
+          "public.notes/anon-read",
+          "public.notes/anon-insert"
+        ],
+        "reason": "Both attacks fail and the owner can still read their rows.",
+        "status": "VERIFIED",
+        "stillProven": [],
+        "subject": "public.notes",
+        "unresolved": []
+      },
+      {
+        "broken": [],
+        "closed": [],
+        "reason": "The proposed policy does not compare the owner column.",
+        "status": "STILL_VULNERABLE",
+        "stillProven": [
+          "public.profiles/cross-read"
+        ],
+        "subject": "public.profiles",
+        "unresolved": []
+      },
+      {
+        "broken": [],
+        "closed": [],
+        "reason": "No fix was proposed for this view.",
+        "status": "NO_FIX",
+        "stillProven": [],
+        "subject": "public.v_user_emails",
+        "unresolved": []
+      }
+    ]
+  },
+  "audit": {
+    "findings": [
+      {
+        "file": "supabase/migrations/001_init.sql",
+        "line": 12,
+        "note": "Reproduced: anonymous read returned 3 rows.",
+        "proofIds": [
+          "public.notes/anon-read"
+        ],
+        "proofStatus": "PROVEN",
+        "rule": "rls-disabled",
+        "severity": "high",
+        "table": "public.notes",
+        "title": "Table without row level security"
+      },
+      {
+        "file": "supabase/migrations/002_profiles.sql",
+        "line": 4,
+        "note": "The database denied every attack on this table.",
+        "proofIds": [],
+        "proofStatus": "NOT_REPRODUCED",
+        "rule": "policy-true",
+        "severity": "medium",
+        "table": "public.orders",
+        "title": "Policy that allows everything"
+      },
+      {
+        "file": "supabase/migrations/002_profiles.sql",
+        "line": 30,
+        "note": "",
+        "proofIds": [],
+        "proofStatus": "STATIC_ONLY",
+        "rule": "rls-unknown",
+        "severity": "low",
+        "table": null,
+        "title": "Possible gap in a dynamic policy"
+      }
+    ],
+    "outOfScope": 2,
+    "priorityTables": [
+      "public.notes"
+    ],
+    "project": "acme-app",
+    "sourceTool": "static-auditor",
+    "sourceVersion": "2.1.0",
+    "warnings": [
+      "one finding had no table name"
+    ]
+  },
+  "migrationErrors": [
+    {
+      "file": "supabase/migrations/002_profiles.sql",
+      "line": 18,
+      "message": "extension \"pg_cron\" is not available",
+      "sqlstate": "0A000",
+      "statement": "create extension pg_cron"
+    },
+    {
+      "file": "supabase/migrations/002_profiles.sql",
+      "line": 22,
+      "message": "schema \"cron\" does not exist",
+      "sqlstate": "3F000",
+      "statement": "select cron.schedule('nightly', '0 3 * * *', 'select 1')"
+    }
+  ],
+  "warnings": [
+    "2 statements were skipped because they are not about row level security",
+    "storage.objects policies were not read"
+  ],
+  "notChecked": [
+    "Storage bucket policies",
+    "Edge functions and webhooks",
+    "Anything outside the SQL you gave us"
+  ]
+}

@@ -1,0 +1,220 @@
+{
+  "tool": {
+    "name": "proof-audit",
+    "version": "0.1.0"
+  },
+  "inputs": [
+    {
+      "bytes": 1204,
+      "path": "supabase/migrations/001_init.sql",
+      "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    }
+  ],
+  "environment": {
+    "image": "postgres:16.3@sha256:0123456789abcdef",
+    "mode": "docker",
+    "postgresVersion": "16.3"
+  },
+  "complete": true,
+  "summary": {
+    "clean": 3,
+    "inconclusive": 0,
+    "probesProven": 0,
+    "probesRun": 6,
+    "proven": 0,
+    "subjects": 3,
+    "suspected": 0
+  },
+  "findings": [
+    {
+      "attackerCan": "Nothing found.",
+      "causes": [],
+      "fixNote": "",
+      "fixStatus": "not-needed",
+      "id": "rls:public.notes",
+      "inconclusive": [],
+      "notReproduced": [],
+      "provenBy": [],
+      "severity": "info",
+      "subject": "public.notes",
+      "subjectKind": "table",
+      "tier": "CLEAN",
+      "title": "Row level security on, owner checked"
+    },
+    {
+      "attackerCan": "Nothing found.",
+      "causes": [],
+      "fixNote": "",
+      "fixStatus": "not-needed",
+      "id": "rls:public.orders",
+      "inconclusive": [],
+      "notReproduced": [],
+      "provenBy": [],
+      "severity": "info",
+      "subject": "public.orders",
+      "subjectKind": "table",
+      "tier": "CLEAN",
+      "title": "Row level security on, owner checked"
+    },
+    {
+      "attackerCan": "Nothing found.",
+      "causes": [],
+      "fixNote": "",
+      "fixStatus": "not-needed",
+      "id": "rls:public.profiles",
+      "inconclusive": [],
+      "notReproduced": [],
+      "provenBy": [],
+      "severity": "info",
+      "subject": "public.profiles",
+      "subjectKind": "table",
+      "tier": "CLEAN",
+      "title": "Row level security on, owner checked"
+    }
+  ],
+  "proofs": [
+    {
+      "actor": "anon",
+      "claims": "{\"role\":\"anon\"}",
+      "command": "select",
+      "hash": "646143c1cae070e1a8dfe80dc72d859d9a016b17df146f2a77ffbd7665106427",
+      "id": "public.notes/anon-read",
+      "intent": "exploit",
+      "kind": "anon-read",
+      "observation": {
+        "rows": 0,
+        "status": "rows"
+      },
+      "phase": "before",
+      "reason": "The anonymous role read nothing.",
+      "role": "anon",
+      "sql": "select * from public.notes",
+      "subject": "public.notes",
+      "subjectKind": "table",
+      "targetRows": 2,
+      "title": "Anonymous visitor reads rows",
+      "verdict": "NOT_REPRODUCED"
+    },
+    {
+      "actor": "user-a",
+      "claims": "{\"role\":\"authenticated\",\"sub\":\"00000000-0000-4000-8000-00000000000a\"}",
+      "command": "select",
+      "hash": "7599b814dc869caa56cba37e1d1768f5b21c17056b6d4e1d4a3a672a3f941de1",
+      "id": "public.notes/own-read",
+      "intent": "legitimate",
+      "kind": "own-read",
+      "observation": {
+        "rows": 2,
+        "status": "rows"
+      },
+      "phase": "before",
+      "reason": "The user can read their own rows.",
+      "role": "authenticated",
+      "sql": "select * from public.notes where user_id = '00000000-0000-4000-8000-00000000000a'",
+      "subject": "public.notes",
+      "subjectKind": "table",
+      "targetRows": 2,
+      "title": "Signed-in user reads own rows",
+      "verdict": "ACCESS_OK"
+    },
+    {
+      "actor": "anon",
+      "claims": "{\"role\":\"anon\"}",
+      "command": "select",
+      "hash": "618165f405cbd424344d46262d0f2e37bb6a608a031abe354c0a76ca62b5109b",
+      "id": "public.orders/anon-read",
+      "intent": "exploit",
+      "kind": "anon-read",
+      "observation": {
+        "rows": 0,
+        "status": "rows"
+      },
+      "phase": "before",
+      "reason": "The anonymous role read nothing.",
+      "role": "anon",
+      "sql": "select * from public.orders",
+      "subject": "public.orders",
+      "subjectKind": "table",
+      "targetRows": 2,
+      "title": "Anonymous visitor reads rows",
+      "verdict": "NOT_REPRODUCED"
+    },
+    {
+      "actor": "user-a",
+      "claims": "{\"role\":\"authenticated\",\"sub\":\"00000000-0000-4000-8000-00000000000a\"}",
+      "command": "select",
+      "hash": "9ed783e927620ee3b1a04865c07757a1211e621fdb7ba3f8fd11226e773d8467",
+      "id": "public.orders/own-read",
+      "intent": "legitimate",
+      "kind": "own-read",
+      "observation": {
+        "rows": 2,
+        "status": "rows"
+      },
+      "phase": "before",
+      "reason": "The user can read their own rows.",
+      "role": "authenticated",
+      "sql": "select * from public.orders where user_id = '00000000-0000-4000-8000-00000000000a'",
+      "subject": "public.orders",
+      "subjectKind": "table",
+      "targetRows": 2,
+      "title": "Signed-in user reads own rows",
+      "verdict": "ACCESS_OK"
+    },
+    {
+      "actor": "anon",
+      "claims": "{\"role\":\"anon\"}",
+      "command": "select",
+      "hash": "b9535afe4272aaef381c9b877f166a911419d2b1cbb55048c963ff474331109b",
+      "id": "public.profiles/anon-read",
+      "intent": "exploit",
+      "kind": "anon-read",
+      "observation": {
+        "rows": 0,
+        "status": "rows"
+      },
+      "phase": "before",
+      "reason": "The anonymous role read nothing.",
+      "role": "anon",
+      "sql": "select * from public.profiles",
+      "subject": "public.profiles",
+      "subjectKind": "table",
+      "targetRows": 2,
+      "title": "Anonymous visitor reads rows",
+      "verdict": "NOT_REPRODUCED"
+    },
+    {
+      "actor": "user-a",
+      "claims": "{\"role\":\"authenticated\",\"sub\":\"00000000-0000-4000-8000-00000000000a\"}",
+      "command": "select",
+      "hash": "df5c7b48884f10dc5502d394e6f02f9630b35882c16e1e6d9fadb999d36a9a25",
+      "id": "public.profiles/own-read",
+      "intent": "legitimate",
+      "kind": "own-read",
+      "observation": {
+        "rows": 2,
+        "status": "rows"
+      },
+      "phase": "before",
+      "reason": "The user can read their own rows.",
+      "role": "authenticated",
+      "sql": "select * from public.profiles where user_id = '00000000-0000-4000-8000-00000000000a'",
+      "subject": "public.profiles",
+      "subjectKind": "table",
+      "targetRows": 2,
+      "title": "Signed-in user reads own rows",
+      "verdict": "ACCESS_OK"
+    }
+  ],
+  "seeding": [],
+  "fix": null,
+  "verification": null,
+  "audit": null,
+  "migrationErrors": [],
+  "warnings": [],
+  "notChecked": [
+    "Storage bucket policies",
+    "Edge functions and webhooks",
+    "Anything outside the SQL you gave us"
+  ]
+}

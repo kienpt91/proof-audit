@@ -1,0 +1,55 @@
+SECURITY REPORT (plain language)
+================================
+Tool: proof-audit 0.1.0
+Checked: 1 table or view
+Input files read: 1
+Database used: a throwaway PostgreSQL database (version 16.3, docker image postgres:16.3@sha256:0123456789abcdef)
+Run complete: yes
+Tests run: 2 (1 showed a real problem)
+RESULT: 1 PROVEN, 0 SUSPECTED, 0 INCONCLUSIVE, 0 CLEAN.
+1 of 1 checked tables or views could be attacked successfully against a real database. PROVEN means we reproduced the problem ourselves.
+
+WHAT WE FOUND
+-------------
+
+[1] PROVEN: reproduced against a real database
+    Severity: HIGH
+    What: Todos are open to everyone
+    Where: public.todos (table)
+    An attacker could: Anyone with the public key can read every todo.
+    Why:
+      - Row level security is switched off on public.todos.
+    How we proved it:
+      1. We acted as an anonymous visitor (no login, only the public key) and ran:
+           select * from public.todos
+         Result: the database returned 5 rows (5 rows seeded for this test).
+         Access was ALLOWED. That is the problem. The anonymous role read seeded rows.
+         Evidence: sha256 afa7badaf6a4
+
+LOOKED FINE
+-----------
+None.
+
+HOW TO FIX
+----------
+- public.todos: Fix VERIFIED: Switch on row level security and restrict todos to their owner.
+
+Proposed SQL (starting point, review before use):
+    alter table public.todos enable row level security;
+    create policy todos_owner on public.todos for all to authenticated using ((select auth.uid()) = user_id);
+
+FIX CHECK
+---------
+VERIFIED: every attack that worked before now fails, and a normal signed-in user can still read and write their own rows.
+
+Per table, before the fix versus after the fix:
+
+  public.todos: VERIFIED (attacks closed, normal use works)
+    Because: The attack fails and the owner can still read their rows.
+    - Anonymous visitor reads rows: worked before, now blocked
+
+WHAT WAS NOT CHECKED
+--------------------
+- Storage bucket policies
+- Edge functions and webhooks
+- Anything outside the SQL you gave us

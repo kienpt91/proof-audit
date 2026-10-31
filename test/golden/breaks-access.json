@@ -1,0 +1,182 @@
+{
+  "tool": {
+    "name": "proof-audit",
+    "version": "0.1.0"
+  },
+  "inputs": [
+    {
+      "bytes": 1204,
+      "path": "supabase/migrations/001_init.sql",
+      "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    }
+  ],
+  "environment": {
+    "image": "postgres:16.3@sha256:0123456789abcdef",
+    "mode": "docker",
+    "postgresVersion": "16.3"
+  },
+  "complete": true,
+  "summary": {
+    "clean": 0,
+    "inconclusive": 0,
+    "probesProven": 1,
+    "probesRun": 2,
+    "proven": 1,
+    "subjects": 1,
+    "suspected": 0
+  },
+  "findings": [
+    {
+      "attackerCan": "Anyone with the public key can read every todo.",
+      "causes": [
+        {
+          "code": "rls-disabled",
+          "text": "Row level security is switched off on public.todos."
+        }
+      ],
+      "fixNote": "Enabling row level security without a policy locks everyone out, including the owners.",
+      "fixStatus": "breaks-access",
+      "id": "rls:public.todos",
+      "inconclusive": [],
+      "notReproduced": [],
+      "provenBy": [
+        "public.todos/anon-read"
+      ],
+      "severity": "high",
+      "subject": "public.todos",
+      "subjectKind": "table",
+      "tier": "PROVEN",
+      "title": "Todos are open to everyone"
+    }
+  ],
+  "proofs": [
+    {
+      "actor": "anon",
+      "claims": "{\"role\":\"anon\"}",
+      "command": "select",
+      "hash": "afa7badaf6a43c47ea01b0c8bcdb34db80761f385e1ff007c83021fa5363cc40",
+      "id": "public.todos/anon-read",
+      "intent": "exploit",
+      "kind": "anon-read",
+      "observation": {
+        "rows": 5,
+        "status": "rows"
+      },
+      "phase": "before",
+      "reason": "The anonymous role read seeded rows.",
+      "role": "anon",
+      "sql": "select * from public.todos",
+      "subject": "public.todos",
+      "subjectKind": "table",
+      "targetRows": 5,
+      "title": "Anonymous visitor reads rows",
+      "verdict": "PROVEN_VULNERABLE"
+    },
+    {
+      "actor": "user-a",
+      "claims": "{\"role\":\"authenticated\",\"sub\":\"00000000-0000-4000-8000-00000000000a\"}",
+      "command": "select",
+      "hash": "b009a23c4a9ab9e64671d9b91179b763c5ce3e3d838708b2f1dddc9a2fac04cb",
+      "id": "public.todos/own-read",
+      "intent": "legitimate",
+      "kind": "own-read",
+      "observation": {
+        "rows": 2,
+        "status": "rows"
+      },
+      "phase": "before",
+      "reason": "The user can read their own rows.",
+      "role": "authenticated",
+      "sql": "select * from public.todos where user_id = '00000000-0000-4000-8000-00000000000a'",
+      "subject": "public.todos",
+      "subjectKind": "table",
+      "targetRows": 2,
+      "title": "Signed-in user reads own rows",
+      "verdict": "ACCESS_OK"
+    }
+  ],
+  "seeding": [],
+  "fix": {
+    "covered": [
+      "public.todos"
+    ],
+    "needsDecision": [],
+    "sql": "alter table public.todos enable row level security;",
+    "statements": [
+      "alter table public.todos enable row level security"
+    ]
+  },
+  "verification": {
+    "after": [
+      {
+        "actor": "anon",
+        "claims": "{\"role\":\"anon\"}",
+        "command": "select",
+        "hash": "362be578880e9450df041ef40048f9562f54a195485555423b458d2ffc726143",
+        "id": "public.todos/anon-read",
+        "intent": "exploit",
+        "kind": "anon-read",
+        "observation": {
+          "rows": 0,
+          "status": "rows"
+        },
+        "phase": "after",
+        "reason": "The anonymous role read nothing.",
+        "role": "anon",
+        "sql": "select * from public.todos",
+        "subject": "public.todos",
+        "subjectKind": "table",
+        "targetRows": 5,
+        "title": "Anonymous visitor reads rows",
+        "verdict": "NOT_REPRODUCED"
+      },
+      {
+        "actor": "user-a",
+        "claims": "{\"role\":\"authenticated\",\"sub\":\"00000000-0000-4000-8000-00000000000a\"}",
+        "command": "select",
+        "hash": "1b409b1381b6c4a5821c7bf8bd69b6da864c74f3aab91874e9e93dea0e57db65",
+        "id": "public.todos/own-read",
+        "intent": "legitimate",
+        "kind": "own-read",
+        "observation": {
+          "rows": 0,
+          "status": "rows"
+        },
+        "phase": "after",
+        "reason": "The user can no longer read their own rows.",
+        "role": "authenticated",
+        "sql": "select * from public.todos where user_id = '00000000-0000-4000-8000-00000000000a'",
+        "subject": "public.todos",
+        "subjectKind": "table",
+        "targetRows": 2,
+        "title": "Signed-in user reads own rows",
+        "verdict": "ACCESS_BROKEN"
+      }
+    ],
+    "applyErrors": [],
+    "status": "BREAKS_ACCESS",
+    "subjects": [
+      {
+        "broken": [
+          "public.todos/own-read"
+        ],
+        "closed": [
+          "public.todos/anon-read"
+        ],
+        "reason": "The attack fails, but the owner can no longer read their own rows.",
+        "status": "BREAKS_ACCESS",
+        "stillProven": [],
+        "subject": "public.todos",
+        "unresolved": []
+      }
+    ]
+  },
+  "audit": null,
+  "migrationErrors": [],
+  "warnings": [],
+  "notChecked": [
+    "Storage bucket policies",
+    "Edge functions and webhooks",
+    "Anything outside the SQL you gave us"
+  ]
+}

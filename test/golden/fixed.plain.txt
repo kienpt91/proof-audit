@@ -1,0 +1,35 @@
+SECURITY REPORT (plain language)
+================================
+Tool: proof-audit 0.1.0
+Checked: 3 tables or views
+Input files read: 1
+Database used: a throwaway PostgreSQL database (version 16.3, docker image postgres:16.3@sha256:0123456789abcdef)
+Run complete: yes
+Tests run: 6 (0 showed a real problem)
+RESULT: 0 PROVEN, 0 SUSPECTED, 0 INCONCLUSIVE, 3 CLEAN.
+No problem could be reproduced.
+
+WHAT WE FOUND
+-------------
+
+Nothing to report: no table or view showed a problem.
+
+LOOKED FINE
+-----------
+- public.notes: Row level security on, owner checked
+- public.orders: Row level security on, owner checked
+- public.profiles: Row level security on, owner checked
+
+HOW TO FIX
+----------
+Nothing to fix.
+
+FIX CHECK
+---------
+No fix check was run, so no fix is confirmed.
+
+WHAT WAS NOT CHECKED
+--------------------
+- Storage bucket policies
+- Edge functions and webhooks
+- Anything outside the SQL you gave us

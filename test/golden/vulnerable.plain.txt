@@ -1,0 +1,164 @@
+SECURITY REPORT (plain language)
+================================
+Tool: proof-audit 0.1.0
+Checked: 7 tables or views
+Input files read: 2
+Database used: a throwaway PostgreSQL database (version 16.3, docker image postgres:16.3@sha256:0123456789abcdef)
+Run complete: yes
+Tests run: 8 (4 showed a real problem)
+RESULT: 3 PROVEN, 1 SUSPECTED, 1 INCONCLUSIVE, 2 CLEAN.
+3 of 7 checked tables or views could be attacked successfully against a real database. PROVEN means we reproduced the problem ourselves. 2 more need a look: SUSPECTED and INCONCLUSIVE items are NOT proven and carry low confidence.
+
+WHAT WE FOUND
+-------------
+
+[1] PROVEN: reproduced against a real database
+    Severity: CRITICAL
+    What: Notes are open to everyone
+    Where: public.notes (table)
+    An attacker could: Anyone with the public key can read, add and change every note.
+    Why:
+      - Row level security is switched off on public.notes, so the public key can read and write every row.
+    How we proved it:
+      1. We acted as an anonymous visitor (no login, only the public key) and ran:
+           select * from public.notes
+         Result: the database returned 3 rows (3 rows seeded for this test).
+         Access was ALLOWED. That is the problem. The anonymous role read seeded rows.
+         Evidence: sha256 ab9e3fad3ba4
+      2. We acted as an anonymous visitor (no login, only the public key) and ran:
+           insert into public.notes (id, user_id, body)
+           values (gen_random_uuid(), '00000000-0000-4000-8000-00000000000a', 'x')
+         Result: the database accepted it and changed 1 row.
+         Access was ALLOWED. That is the problem. The anonymous role inserted a row.
+         Evidence: sha256 621b56d24dd8
+    Attempts the database blocked:
+      - Signed-in user deletes another user's rows: the database ran it but changed 0 rows (2 rows seeded for this test)
+
+[2] PROVEN: reproduced against a real database
+    Severity: HIGH
+    What: Any signed-in user can read all profiles
+    Where: public.profiles (table)
+    An attacker could: Any signed-in user can read the profiles of every other user.
+    Why:
+      - The policy "profiles_read" allows every row.
+      - No policy compares user_id with the signed-in user.
+    How we proved it:
+      1. We acted as a signed-in user trying to reach someone else's data and ran:
+           select * from public.profiles
+         Result: the database returned 4 rows (2 rows seeded for this test).
+         Access was ALLOWED. That is the problem. The signed-in user read rows owned by someone else.
+         Evidence: sha256 d5200c7a09d8
+    Attempts the database blocked:
+      - Anonymous visitor reads rows: the database refused it (error 42501: permission denied for table profiles)
+
+[3] PROVEN: reproduced against a real database
+    Severity: MEDIUM
+    What: A view exposes e-mail addresses
+    Where: public.v_user_emails (view)
+    An attacker could: Anyone with the public key can read e-mail addresses through the view.
+    Why:
+      - The view runs with its owner's rights, so row level security does not apply.
+    How we proved it:
+      1. We acted as an anonymous visitor (no login, only the public key) and ran:
+           select * from public.v_user_emails
+         Result: the database returned 2 rows.
+         Access was ALLOWED. That is the problem. The anonymous role read rows through the view.
+         Evidence: sha256 34c9cb19c4fc
+
+[4] SUSPECTED: NOT proven, low confidence
+    Severity: MEDIUM
+    What: Messages may be readable by other users
+    Where: public.messages (table)
+    NOTE: Reading the SQL suggests a problem, but the database did not confirm it. Treat this as a lead to check, not as a fact.
+    An attacker could: A signed-in user might read messages sent to someone else.
+    Why:
+      - The policy "msg_read" checks only that the user is signed in.
+
+[5] INCONCLUSIVE: NOT proven, the test gave no clear answer
+    Severity: LOW
+    What: The audit log could not be tested
+    Where: public.audit_log (table)
+    NOTE: The test could not be completed, so we cannot say whether this is a problem. Treat this as unknown, not as safe.
+    An attacker could: Unknown: the test could not run.
+    Could not be tested (no clear answer):
+      - Anonymous visitor reads rows: the table could not be seeded
+
+LOOKED FINE
+-----------
+- public.orders: Row level security on, owner checked
+- public.settings: Row level security on, no public access
+
+HOW TO FIX
+----------
+- public.notes: Fix VERIFIED: Switch on row level security and let users touch only their own notes.
+- public.profiles: The proposed fix does NOT close the hole yet. The proposed policy still lets every signed-in user read every profile.
+- public.v_user_emails: A fix needs a decision from you (see below). Decide whether the view should run with the rights of the caller.
+- public.messages: A fix needs a decision from you (see below). Decide who may read a message: sender, receiver or both.
+- public.audit_log: No fix was proposed automatically. Fix the seeding problem and run again.
+
+Proposed SQL (starting point, review before use):
+    -- public.notes: only the owner may touch a note
+    alter table public.notes enable row level security;
+    create policy "notes_owner" on public.notes
+      for all to authenticated
+      using ((select auth.uid()) = user_id)
+      with check ((select auth.uid()) = user_id);
+
+These need a decision only you can make:
+- public.messages: Only you know whether receivers may read messages.
+- public.v_user_emails: Changing the view may break pages that rely on it.
+
+FIX CHECK
+---------
+PARTIAL: only some tables are fixed and confirmed. See the table below. The rest still need work.
+
+Per table, before the fix versus after the fix:
+
+  public.notes: VERIFIED (attacks closed, normal use works)
+    Because: Both attacks fail and the owner can still read their rows.
+    - Anonymous visitor reads rows: worked before, now blocked
+    - Anonymous visitor inserts a row: worked before, now blocked
+
+  public.profiles: STILL VULNERABLE
+    Because: The proposed policy does not compare the owner column.
+    - Signed-in user reads another user's rows: worked before, STILL works
+
+  public.v_user_emails: NO FIX PROPOSED
+    Because: No fix was proposed for this view.
+
+STATIC AUDITOR CROSS-CHECK
+--------------------------
+Findings from static-auditor 2.1.0 (project acme-app), checked against our tests:
+- PROVEN by our test: Table without row level security [table public.notes]
+    rls-disabled (high) at supabase/migrations/001_init.sql:12
+    Reproduced: anonymous read returned 3 rows.
+- could not be reproduced: Policy that allows everything [table public.orders]
+    policy-true (medium) at supabase/migrations/002_profiles.sql:4
+    The database denied every attack on this table.
+- static finding only, not tested: Possible gap in a dynamic policy
+    rls-unknown (low) at supabase/migrations/002_profiles.sql:30
+2 static findings out of scope (not about row level security, not tested here).
+  warning: one finding had no table name
+
+MIGRATION STATEMENTS THE DATABASE REJECTED
+------------------------------------------
+2 in total. Anything after them may not have been tested as written.
+- supabase/migrations/002_profiles.sql:18 [0A000] extension "pg_cron" is not available
+    create extension pg_cron
+- supabase/migrations/002_profiles.sql:22 [3F000] schema "cron" does not exist
+    select cron.schedule('nightly', '0 3 * * *', 'select 1')
+
+TEST DATA PROBLEMS
+------------------
+- public.audit_log: failed (column details has no default and is not null)
+
+WARNINGS
+--------
+- 2 statements were skipped because they are not about row level security
+- storage.objects policies were not read
+
+WHAT WAS NOT CHECKED
+--------------------
+- Storage bucket policies
+- Edge functions and webhooks
+- Anything outside the SQL you gave us

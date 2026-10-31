@@ -1,0 +1,55 @@
+SECURITY REPORT (plain language)
+================================
+Tool: proof-audit 0.1.0
+Checked: 1 table or view
+Input files read: 1
+Database used: a throwaway PostgreSQL database (version 16.3, docker image postgres:16.3@sha256:0123456789abcdef)
+Run complete: yes
+Tests run: 2 (1 showed a real problem)
+RESULT: 1 PROVEN, 0 SUSPECTED, 0 INCONCLUSIVE, 0 CLEAN.
+1 of 1 checked tables or views could be attacked successfully against a real database. PROVEN means we reproduced the problem ourselves.
+
+WHAT WE FOUND
+-------------
+
+[1] PROVEN: reproduced against a real database
+    Severity: HIGH
+    What: Todos are open to everyone
+    Where: public.todos (table)
+    An attacker could: Anyone with the public key can read every todo.
+    Why:
+      - Row level security is switched off on public.todos.
+    How we proved it:
+      1. We acted as an anonymous visitor (no login, only the public key) and ran:
+           select * from public.todos
+         Result: the database returned 5 rows (5 rows seeded for this test).
+         Access was ALLOWED. That is the problem. The anonymous role read seeded rows.
+         Evidence: sha256 afa7badaf6a4
+
+LOOKED FINE
+-----------
+None.
+
+HOW TO FIX
+----------
+- public.todos: The proposed fix closes the hole but breaks normal use. Do not apply it as it is. Enabling row level security without a policy locks everyone out, including the owners.
+
+Proposed SQL (starting point, review before use):
+    alter table public.todos enable row level security;
+
+FIX CHECK
+---------
+BREAKS ACCESS: the attacks are blocked, but normal users lost access they need. Do not ship this fix as it is.
+
+Per table, before the fix versus after the fix:
+
+  public.todos: BREAKS ACCESS (attack closed, normal use broken)
+    Because: The attack fails, but the owner can no longer read their own rows.
+    - Anonymous visitor reads rows: worked before, now blocked
+    - Signed-in user reads own rows: normal use that worked before, now BROKEN
+
+WHAT WAS NOT CHECKED
+--------------------
+- Storage bucket policies
+- Edge functions and webhooks
+- Anything outside the SQL you gave us
