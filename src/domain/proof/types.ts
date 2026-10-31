@@ -17,6 +17,7 @@ export type ProbeKind =
   | "reassign-owner"
   | "view-read-anon"
   | "view-read-cross"
+  | "view-read-own"
   | "own-read"
   | "own-insert"
   | "own-update"
