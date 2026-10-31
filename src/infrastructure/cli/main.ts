@@ -1,0 +1,180 @@
+import { isAbsolute, join } from "node:path";
+import { analyzeRls } from "../../application/analyze.js";
+import type { Clock, LoadedFile, LoadedFiles, SandboxProvider } from "../../application/ports.js";
+import { renderJson } from "../../application/report/json.js";
+import { renderMarkdown } from "../../application/report/markdown.js";
+import { renderPlain } from "../../application/report/plain.js";
+import { verifyEvidence } from "../../application/verify.js";
+import type { AnalysisReport } from "../../domain/analysis/types.js";
+import { parseAuditReport } from "../../domain/audit/import.js";
+import { buildContract, encodeContract } from "../../domain/evidence/contract.js";
+import { encodeProofsJsonl } from "../../domain/evidence/proofs.js";
+import { LIMITS } from "../../domain/limits.js";
+import { parseLoopbackUrl, type LoopbackEndpoint } from "../../domain/safety/loopback.js";
+import { terminalText } from "../../domain/text/sanitize.js";
+import { displayPath, InputError } from "../fs/files.js";
+import { parseArgs, USAGE, type Command } from "./args.js";
+
+export interface TrackedProvider extends SandboxProvider {
+  disposeAll(): Promise<void>;
+}
+
+export interface CliDeps {
+  readonly cwd: string;
+  readonly env: Readonly<Record<string, string | undefined>>;
+  readonly version: string;
+  readonly clock: Clock;
+  readonly loadSql: (paths: readonly string[]) => Promise<LoadedFiles>;
+  readonly readText: (path: string, maxBytes: number) => Promise<string>;
+  readonly writeOutputs: (dir: string, files: Readonly<Record<string, string>>) => Promise<void>;
+  /** The throwaway-container provider. */
+  readonly dockerProvider: () => TrackedProvider;
+  /** A provider for a Postgres server on this machine's loopback interface; only ever called with a validated endpoint. */
+  readonly urlProvider: (endpoint: LoopbackEndpoint) => TrackedProvider;
+  readonly stdout: (text: string) => void;
+  readonly stderr: (text: string) => void;
+}
+
+const TOOL = "proof-audit";
+
+function message(e: unknown): string {
+  return terminalText(e instanceof Error ? e.message : "unknown error", 400);
+}
+
+function providerFor(url: string | null, deps: CliDeps): TrackedProvider | string {
+  if (url === null) return deps.dockerProvider();
+  const endpoint = parseLoopbackUrl(url);
+  return endpoint.ok ? deps.urlProvider(endpoint.value) : endpoint.error;
+}
+
+function artifacts(report: AnalysisReport, command: Extract<Command, { kind: "rls" }>, out: string, deps: CliDeps): Record<string, string> {
+  const fix = report.fix?.statements ?? [];
+  const proofs = [...report.proofs, ...(report.verification?.after ?? [])];
+  const meta = { tool: report.tool, image: report.environment.image, inputs: report.inputs, fixStatements: fix, fixSha256: null };
+  const files: Record<string, string> = {
+    "report.md": renderMarkdown(report),
+    "report.json": renderJson(report),
+    "proofs.jsonl": encodeProofsJsonl(meta, proofs),
+    "verification-contract.json": encodeContract(
+      buildContract({
+        tool: report.tool,
+        proofsFile: displayPath(join(out, "proofs.jsonl"), deps.cwd),
+        againstArgs: command.paths,
+        hasProven: report.summary.proven > 0,
+      }),
+    ),
+  };
+  if (report.fix) files["fix.sql"] = report.fix.sql;
+  return files;
+}
+
+async function runRls(command: Extract<Command, { kind: "rls" }>, deps: CliDeps): Promise<number> {
+  const provider = providerFor(command.databaseUrl, deps);
+  if (typeof provider === "string") {
+    deps.stderr(`${TOOL}: ${provider}\n`);
+    return 2;
+  }
+  let loaded: LoadedFiles;
+  let audit = null;
+  try {
+    loaded = await deps.loadSql(command.paths);
+    if (command.fromAudit !== null) {
+      const parsed = parseAuditReport(await deps.readText(command.fromAudit, LIMITS.maxJsonBytes));
+      if (!parsed.ok) {
+        deps.stderr(`${TOOL}: ${terminalText(parsed.error, 300)}\n`);
+        return 2;
+      }
+      audit = parsed.value;
+    }
+  } catch (e) {
+    deps.stderr(`${TOOL}: ${message(e)}\n`);
+    return 2;
+  }
+  deps.stderr(`${TOOL}: reading ${loaded.files.length} SQL file(s); preparing a throwaway database\n`);
+  let report: AnalysisReport;
+  try {
+    report = await analyzeRls(
+      { files: loaded.files, loadWarnings: loaded.warnings, inputsComplete: loaded.complete, audit, proposeFix: command.proposeFix, tool: { name: TOOL, version: deps.version } },
+      { provider, clock: deps.clock },
+    );
+  } catch (e) {
+    deps.stderr(`${TOOL}: ${message(e)}\n`);
+    return 3;
+  } finally {
+    await provider.disposeAll();
+  }
+  deps.stdout(command.format === "json" ? renderJson(report) : command.format === "markdown" ? renderMarkdown(report) : renderPlain(report));
+  if (command.out !== null) {
+    try {
+      await deps.writeOutputs(command.out, artifacts(report, command, command.out, deps));
+      deps.stderr(`${TOOL}: wrote report.md, report.json, proofs.jsonl, verification-contract.json${report.fix ? " and fix.sql" : ""} to ${terminalText(command.out, 200)}\n`);
+    } catch (e) {
+      deps.stderr(`${TOOL}: ${message(e)}\n`);
+      return 2;
+    }
+  }
+  if (command.failOn === "proven" && report.summary.proven > 0) return 1;
+  return report.complete ? 0 : 3;
+}
+
+async function runVerify(command: Extract<Command, { kind: "verify" }>, deps: CliDeps): Promise<number> {
+  const provider = providerFor(command.databaseUrl, deps);
+  if (typeof provider === "string") {
+    deps.stderr(`${TOOL}: ${provider}\n`);
+    return 2;
+  }
+  let proofsText: string;
+  let against: readonly LoadedFile[] | null = null;
+  try {
+    proofsText = await deps.readText(command.proofs, LIMITS.maxJsonBytes);
+    if (command.against) against = (await deps.loadSql(command.against)).files;
+  } catch (e) {
+    deps.stderr(`${TOOL}: ${message(e)}\n`);
+    return 2;
+  }
+  const root = command.root ?? deps.cwd;
+  const readInput = async (path: string): Promise<LoadedFile | null> => {
+    try {
+      const text = await deps.readText(isAbsolute(path) ? path : join(root, path), LIMITS.maxSqlFileBytes);
+      return { path, content: text, bytes: Buffer.byteLength(text, "utf8") };
+    } catch (e) {
+      if (e instanceof InputError) return null;
+      throw e;
+    }
+  };
+  try {
+    const result = await verifyEvidence({ proofsText, readInput, against }, { provider, clock: deps.clock });
+    const head = result.status === "ok" ? "OK" : result.status.toUpperCase();
+    deps.stdout(`${head}: ${result.probesChecked} probes replayed\n${result.messages.map((m) => `  ${terminalText(m, 400)}`).join("\n")}\n`);
+    return result.status === "ok" ? 0 : result.status === "mismatch" ? 1 : result.status === "invalid" ? 2 : 3;
+  } catch (e) {
+    deps.stderr(`${TOOL}: ${message(e)}\n`);
+    return 3;
+  } finally {
+    await provider.disposeAll();
+  }
+}
+
+/** Entry point for the command line. Returns the exit code; never throws and never exits the process. */
+export async function runCli(argv: readonly string[], deps: CliDeps): Promise<number> {
+  const parsed = parseArgs(argv, deps.env);
+  if (!parsed.ok) {
+    deps.stderr(`${TOOL}: ${parsed.error}\n\n${USAGE}`);
+    return 2;
+  }
+  const command = parsed.value;
+  if (command.kind === "help") {
+    deps.stdout(USAGE);
+    return 0;
+  }
+  if (command.kind === "version") {
+    deps.stdout(`${TOOL} ${deps.version}\n`);
+    return 0;
+  }
+  try {
+    return command.kind === "rls" ? await runRls(command, deps) : await runVerify(command, deps);
+  } catch (e) {
+    deps.stderr(`${TOOL}: unexpected error: ${message(e)}\n`);
+    return 3;
+  }
+}
