@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -121,5 +121,41 @@ describe("writeOutputs", () => {
     mkdirSync(join(dir, "real"));
     symlinkSync(join(dir, "real"), join(dir, "link"));
     await expect(writeOutputs(join(dir, "link"), { "a.txt": "A" })).rejects.toThrow("real directory");
+  });
+});
+
+describe("writeOutputs and symbolic links", () => {
+  it("does not write through a symbolic link that already sits at an output name", async () => {
+    const victim = join(dir, "victim.txt");
+    writeFileSync(victim, "keep me");
+    mkdirSync(join(dir, "out"));
+    symlinkSync(victim, join(dir, "out", "report.md"));
+    await expect(writeOutputs(join(dir, "out"), { "report.md": "overwritten" })).rejects.toThrow("symbolic link or special file");
+    expect(readFileSync(victim, "utf8")).toBe("keep me");
+  });
+
+  it("does not write through a dangling symbolic link either, and creates nothing at its target", async () => {
+    mkdirSync(join(dir, "out"));
+    symlinkSync(join(dir, "does-not-exist.txt"), join(dir, "out", "fix.sql"));
+    await expect(writeOutputs(join(dir, "out"), { "fix.sql": "x" })).rejects.toThrow();
+    expect(() => readFileSync(join(dir, "does-not-exist.txt"))).toThrow();
+  });
+
+  it("does not open a FIFO left at an output name", async () => {
+    mkdirSync(join(dir, "out"));
+    execFileSync("mkfifo", [join(dir, "out", "proofs.jsonl")]);
+    await expect(writeOutputs(join(dir, "out"), { "proofs.jsonl": "x" })).rejects.toThrow("symbolic link or special file");
+  });
+
+  it("replaces an existing regular file completely", async () => {
+    mkdirSync(join(dir, "out"));
+    writeFileSync(join(dir, "out", "report.md"), "a much longer previous report");
+    await writeOutputs(join(dir, "out"), { "report.md": "new" });
+    expect(readFileSync(join(dir, "out", "report.md"), "utf8")).toBe("new");
+  });
+
+  it("writes files readable by others but not writable by them", async () => {
+    await writeOutputs(join(dir, "out2"), { "a.txt": "x" });
+    expect((statSync(join(dir, "out2", "a.txt")).mode & 0o777).toString(8)).toMatch(/^6[0-4][0-4]$/);
   });
 });

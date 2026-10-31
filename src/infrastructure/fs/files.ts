@@ -1,5 +1,5 @@
 import { constants } from "node:fs";
-import { lstat, mkdir, open, readdir, writeFile } from "node:fs/promises";
+import { lstat, mkdir, open, readdir } from "node:fs/promises";
 import { join, relative, sep } from "node:path";
 import type { LoadedFile, LoadedFiles } from "../../application/ports.js";
 import { LIMITS } from "../../domain/limits.js";
@@ -112,11 +112,28 @@ export async function loadSqlInputs(paths: readonly string[], cwd: string): Prom
   return { files, warnings, complete };
 }
 
+/**
+ * Write each output file without following a symbolic link or opening a FIFO that already sits at that name: the
+ * directory may come from a checkout that contains `report.md -> ~/.zshrc`. Existing regular files are replaced.
+ */
 export async function writeOutputs(dir: string, files: Readonly<Record<string, string>>): Promise<void> {
   await mkdir(dir, { recursive: true });
   const info = await lstat(dir);
   if (info.isSymbolicLink() || !info.isDirectory()) throw new InputError(`${dir}: output must be a real directory`);
   for (const [name, content] of Object.entries(files)) {
-    await writeFile(join(dir, name), content, { encoding: "utf8", mode: 0o644 });
+    const target = join(dir, name);
+    let handle;
+    try {
+      handle = await open(target, constants.O_WRONLY | constants.O_CREAT | constants.O_NOFOLLOW | constants.O_NONBLOCK, 0o644);
+    } catch {
+      throw new InputError(`${displayPath(target, process.cwd())}: cannot write here (a symbolic link or special file is in the way)`);
+    }
+    try {
+      if (!(await handle.stat()).isFile()) throw new InputError(`${displayPath(target, process.cwd())}: not a regular file`);
+      await handle.truncate(0);
+      await handle.writeFile(content, "utf8");
+    } finally {
+      await handle.close();
+    }
   }
 }
