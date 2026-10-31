@@ -32,4 +32,6 @@ export interface ParseResult {
   readonly model: SchemaModel;
   /** Statements the reader skipped or could not fully read, and caps that were hit. */
   readonly warnings: readonly Warning[];
+  /** False when a size or count cap dropped input, so later results may be partial. */
+  readonly complete: boolean;
 }
