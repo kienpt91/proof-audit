@@ -113,7 +113,10 @@ function tableProbes(table: Table, counts: SeedCounts, lookup: TableLookup): Pro
 
   const ownerCol = quoteIdent(owner.column);
   const rowsOf = (who: typeof USER_A | typeof USER_B): string => `${ownerCol}::text = ${quoteLiteral(ownerText(table, owner, who))}`;
-  const ownerCanBeNull = !(table.columns.find((c) => c.name === owner.column)?.notNull ?? true);
+  const ownerColumn = table.columns.find((c) => c.name === owner.column);
+  const ownerCanBeNull = !(ownerColumn?.notNull ?? true);
+  // One row per user (the owner column is the key): a second row of their own cannot exist, so there is nothing to test.
+  const oneRowPerOwner = ownerColumn?.primaryKey === true || ownerColumn?.unique === true;
   const crossInsert = insertProbeSql(table, attackerCtx, lookup);
   const nullInsert = insertProbeSql(table, { ...attackerCtx, salt: "probe:null-owner-insert", nullOwner: true }, lookup);
   const ownInsert = insertProbeSql(table, { salt: "probe:own-insert", owner: USER_A, other: USER_A, tenant: USER_A, nullOwner: false }, lookup);
@@ -152,7 +155,7 @@ function tableProbes(table: Table, counts: SeedCounts, lookup: TableLookup): Pro
       needRows(counts.rowsUserA, "user A has no rows"),
     ),
     probe(key, "table", "own-read", "legitimate", "select", USER, "Signed-in user A reads their own rows", `SELECT * FROM ${target} WHERE ${rowsOf(USER_A)}`, counts.rowsUserA, needRows(counts.rowsUserA, "user A has no rows")),
-    probe(key, "table", "own-insert", "legitimate", "insert", USER, "Signed-in user A adds their own row", ownInsert.sql, null, ownInsert.reason),
+    ...(oneRowPerOwner ? [] : [probe(key, "table", "own-insert", "legitimate", "insert", USER, "Signed-in user A adds their own row", ownInsert.sql, null, ownInsert.reason)]),
     probe(
       key,
       "table",
@@ -202,17 +205,33 @@ export function viewsOverProtectedTables(model: SchemaModel): readonly View[] {
   return model.views.filter((v) => baseTables(v, model).some((t) => t.rlsEnabled));
 }
 
+/** The `WHERE` predicate selecting one user's rows through a view, or null when the view hides the owner column. */
+function viewRowFilter(view: View, model: SchemaModel, who: typeof USER_A | typeof USER_B): string | null {
+  const owner = viewOwner(view, model);
+  if (!owner) return null;
+  const base = baseTables(view, model).find((t) => primaryOwnerColumn(t)?.column === owner.column);
+  return base ? `${quoteIdent(owner.column)}::text = ${quoteLiteral(ownerText(base, owner, who))}` : null;
+}
+
+/** Queries (run as the database owner) that count what a view holds in total and per synthetic user. */
+export function viewCountQueries(view: View, model: SchemaModel): { readonly total: string; readonly userA: string | null; readonly userB: string | null } {
+  const target = quoteQualified(view.name.schema, view.name.name);
+  const a = viewRowFilter(view, model, USER_A);
+  const b = viewRowFilter(view, model, USER_B);
+  return {
+    total: `SELECT count(*) FROM ${target}`,
+    userA: a ? `SELECT count(*) FROM ${target} WHERE ${a}` : null,
+    userB: b ? `SELECT count(*) FROM ${target} WHERE ${b}` : null,
+  };
+}
+
 function viewProbes(view: View, model: SchemaModel, counts: ViewCounts | undefined): Probe[] {
   const key = qualifiedKey(view.name);
   const target = quoteQualified(view.name.schema, view.name.name);
-  const owner = viewOwner(view, model);
   const total = counts?.total ?? null;
-  const rowsOf = (who: typeof USER_A | typeof USER_B): string | null => {
-    if (!owner) return null;
-    const base = baseTables(view, model).find((t) => primaryOwnerColumn(t)?.column === owner.column);
-    return base ? `${quoteIdent(owner.column)}::text = ${quoteLiteral(ownerText(base, owner, who))}` : null;
-  };
-  const out: Probe[] = [
+  const a = viewRowFilter(view, model, USER_A);
+  const b = viewRowFilter(view, model, USER_B);
+  return [
     probe(
       key,
       "view",
@@ -225,10 +244,6 @@ function viewProbes(view: View, model: SchemaModel, counts: ViewCounts | undefin
       total,
       total === null || total === 0 ? "the view returns no rows even to the database owner" : null,
     ),
-  ];
-  const b = rowsOf(USER_B);
-  const a = rowsOf(USER_A);
-  out.push(
     probe(
       key,
       "view",
@@ -253,8 +268,7 @@ function viewProbes(view: View, model: SchemaModel, counts: ViewCounts | undefin
       counts?.ownedByUserA ?? null,
       a ? (counts?.ownedByUserA ? null : "the view returns none of user A's rows even to the database owner") : "the view does not expose an owner column",
     ),
-  );
-  return out;
+  ];
 }
 
 /** Every probe for the model, in a stable order: priority subjects first, then by name; tables before views. */

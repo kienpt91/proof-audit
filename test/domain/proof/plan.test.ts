@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { baseTables, planProbes, updatableColumn, viewOwner, viewsOverProtectedTables, type SeedCounts } from "../../../src/domain/proof/plan.js";
+import { baseTables, planProbes, updatableColumn, viewCountQueries, viewOwner, viewsOverProtectedTables, type SeedCounts } from "../../../src/domain/proof/plan.js";
 import { USER_A, USER_B } from "../../../src/domain/supabase/identities.js";
 import { col, model, notes, pk, tbl, userFk, view } from "../../helpers/model.js";
 
@@ -47,6 +47,14 @@ describe("planProbes for an owned table", () => {
       expect(p.id).toBe(`public.notes/${p.kind}`);
       expect(p.blockedReason).toBeNull();
     }
+  });
+
+  it("plans no own-insert when the owner column is the key, since a user can only have one row", () => {
+    const profiles = tbl("profiles", [col("id", "uuid", { primaryKey: true, notNull: true, unique: true, references: { schema: "auth", table: "users", column: "id" } }), col("name", "text")]);
+    const kinds = plan(model([profiles]), seeded("public.profiles")).map((p) => p.kind);
+    expect(kinds).not.toContain("own-insert");
+    expect(kinds).toContain("own-read");
+    expect(kinds).toContain("cross-insert");
   });
 
   it("updates a non-key column to itself", () => {
@@ -166,5 +174,20 @@ describe("view probes", () => {
     const empty = new Map([["public.v_notes", { total: 0, ownedByUserA: 0, ownedByUserB: 0 }]]);
     const probes = planProbes({ model: m, seed: seeded(), views: empty }).filter((p) => p.subjectKind === "view");
     expect(probes.every((p) => p.blockedReason !== null)).toBe(true);
+  });
+});
+
+describe("viewCountQueries", () => {
+  it("counts the whole view and each user's rows through the owner column", () => {
+    const m = model([notes()], [view("v_notes")]);
+    const q = viewCountQueries(m.views[0]!, m);
+    expect(q.total).toBe('SELECT count(*) FROM "public"."v_notes"');
+    expect(q.userB).toBe(`SELECT count(*) FROM "public"."v_notes" WHERE "user_id"::text = '${USER_B.id}'`);
+    expect(q.userA).toContain(USER_A.id);
+  });
+
+  it("has no per-user counts when the view hides the owner column", () => {
+    const m = model([notes()], [view("v_notes", { columns: ["id"] })]);
+    expect(viewCountQueries(m.views[0]!, m)).toMatchObject({ userA: null, userB: null });
   });
 });
