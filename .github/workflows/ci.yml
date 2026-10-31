@@ -1,0 +1,81 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        node: [22, 24]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: ${{ matrix.node }}
+          cache: npm
+      - run: npm ci --ignore-scripts
+      - run: npm run typecheck
+      - run: npm test
+      - run: npm run build
+
+  integration:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        # postgres 16.14, pinned by digest. Trust auth is safe here: the service is only reachable from this runner.
+        image: postgres@sha256:95206741a5b214807675e14165369d05b93a9cf692223b616d07cca227e74b0b
+        env:
+          POSTGRES_HOST_AUTH_METHOD: trust
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci --ignore-scripts
+      - run: npm run test:integration
+        env:
+          PROOF_AUDIT_DATABASE_URL: postgres://postgres@127.0.0.1:5432/postgres
+      # The default mode: a throwaway container with no network, started by the tool itself.
+      - run: npm run build
+      - run: docker pull postgres@sha256:95206741a5b214807675e14165369d05b93a9cf692223b616d07cca227e74b0b
+      - run: |
+          set +e
+          node dist/bin.js rls examples/vulnerable-app/supabase/migrations --out out/vulnerable > /dev/null
+          test $? -eq 1
+          node dist/bin.js rls examples/fixed-app/supabase/migrations > /dev/null
+          test $? -eq 0
+          node dist/bin.js verify out/vulnerable/proofs.jsonl > /dev/null
+          test $? -eq 0
+          node dist/bin.js verify out/vulnerable/proofs.jsonl --against examples/fixed-app/supabase/migrations > /dev/null
+          test $? -eq 0
+
+  secret-scan:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - run: sh scripts/secret-scan.sh --tree
+      - run: sh scripts/secret-scan.sh --history
