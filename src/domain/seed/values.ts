@@ -59,7 +59,7 @@ interface TypeInfo {
 function typeInfo(column: Column): TypeInfo {
   const type = column.type.trim().toLowerCase();
   const paren = /\((\d+)(?:\s*,\s*(\d+))?\)/.exec(type);
-  const base = type.replace(/\(.*?\)/g, "").replace(/\s+/g, " ").trim();
+  const base = type.replace(/\(.*?\)/g, "").replace(/\s+/g, " ").trim().replace(/^extensions\.citext$/, "citext");
   const length = paren ? Number(paren[1]) : null;
   const make = (kind: TypeKind, extra: Partial<TypeInfo> = {}): TypeInfo => ({ kind, length: null, intMax: 2147483647, precision: null, scale: null, withTz: false, base, ...extra });
   if (column.enumLabels && column.enumLabels.length > 0) return make("enum");

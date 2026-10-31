@@ -73,14 +73,18 @@ function itemFor(table: Table, identity: SeedIdentity, lookup: TableLookup): See
   const ctx = person ? seedContext(person) : sharedContext();
   const attempts: SeedAttempt[] = [];
   let firstReason: string | null = null;
-  for (const label of ["full", "minimal"] as const) {
-    const plan = planRow(table, ctx, lookup, label);
-    if (!plan.ok) {
-      firstReason ??= plan.reason;
-      continue;
+  // ON CONFLICT DO NOTHING first (a trigger may already have created the row); a table with INSERT or UPDATE rules refuses
+  // that clause, so the same rows are also offered as plain inserts.
+  for (const onConflict of [true, false]) {
+    for (const label of ["full", "minimal"] as const) {
+      const plan = planRow(table, ctx, lookup, label);
+      if (!plan.ok) {
+        firstReason ??= plan.reason;
+        continue;
+      }
+      const sql = insertStatement(table, plan, onConflict);
+      if (!attempts.some((a) => a.sql === sql)) attempts.push({ label, sql });
     }
-    const sql = insertStatement(table, plan, true);
-    if (!attempts.some((a) => a.sql === sql)) attempts.push({ label, sql });
   }
   if (attempts.length === 0) return { skipped: firstReason ?? "no row could be planned" };
   const owner = primaryOwnerColumn(table);

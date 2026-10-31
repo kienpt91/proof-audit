@@ -59,6 +59,17 @@ describe("valueForColumn", () => {
     expect(value(t, "status")).toEqual({ kind: "value", sql: "'active'" });
   });
 
+  it("treats the citext type of the extensions schema as text, which is how the catalog prints it", () => {
+    const t = tbl("x", [pk(), col("email", "extensions.citext")]);
+    expect(value(t, "email")).toEqual({ kind: "value", sql: "'alice@example.test'" });
+  });
+
+  it("does not treat a user-defined type that merely has a text-like name as text", () => {
+    const t = tbl("x", [pk(), col("note", "public.text"), col("tag", "other.citext")]);
+    expect(value(t, "note").kind).toBe("impossible");
+    expect(value(t, "tag").kind).toBe("impossible");
+  });
+
   it("respects varchar length limits", () => {
     const t = tbl("x", [pk(), col("summary", "character varying(8)")]);
     const v = value(t, "summary");
@@ -203,11 +214,13 @@ describe("planSeed", () => {
     expect(plan.skipped.map((s) => s.table)).toEqual(["public.bad", "public.bad"]);
   });
 
-  it("offers a minimal retry only when it differs from the full attempt", () => {
+  it("offers a minimal retry only when it differs from the full attempt, and a plain insert after each ON CONFLICT insert", () => {
     const plan = planSeed(model([notes()]));
-    expect(plan.items[0]?.attempts.map((a) => a.label)).toEqual(["full"]);
+    expect(plan.items[0]?.attempts.map((a) => a.label)).toEqual(["full", "full"]);
+    expect(plan.items[0]?.attempts.map((a) => a.sql.includes("ON CONFLICT"))).toEqual([true, false]);
     const t = tbl("n2", [pk(), userFk(), col("body", "text")]);
-    expect(planSeed(model([t])).items[0]?.attempts.map((a) => a.label)).toEqual(["full", "minimal"]);
+    expect(planSeed(model([t])).items[0]?.attempts.map((a) => a.label)).toEqual(["full", "minimal", "full", "minimal"]);
+    expect(planSeed(model([t])).items[0]?.attempts.map((a) => a.sql.includes("ON CONFLICT"))).toEqual([true, true, false, false]);
   });
 
   it("is deterministic", () => {
