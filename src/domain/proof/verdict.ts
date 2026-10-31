@@ -26,6 +26,10 @@ export function judge(probe: Probe, observation: ProbeObservation): { readonly v
     if (observation.sqlstate === DENIED) {
       return { verdict: no, reason: "the database refused the statement (permission denied or a row-level security rule)" };
     }
+    if (exploit && probe.command === "insert" && observation.sqlstate.startsWith("23")) {
+      // Postgres checks row-level-security policies before table constraints, so an integrity error here means the policy let the row through.
+      return { verdict: "PROVEN_VULNERABLE", reason: `the access policy let the row through; only a table constraint (SQLSTATE ${observation.sqlstate}) stopped the insert` };
+    }
     return { verdict: "INCONCLUSIVE", reason: `the statement failed with SQLSTATE ${observation.sqlstate} before access could be judged` };
   }
   const rows = observation.rows;

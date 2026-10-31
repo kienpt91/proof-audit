@@ -55,9 +55,20 @@ describe("judge: exploit probes", () => {
   });
 
   it("is inconclusive for any other error and names the SQLSTATE", () => {
-    const r = judge(probe({ command: "insert" }), error("23505"));
+    const r = judge(probe({ command: "insert" }), error("22P02"));
     expect(r.verdict).toBe("INCONCLUSIVE");
-    expect(r.reason).toContain("23505");
+    expect(r.reason).toContain("22P02");
+  });
+
+  it("proves an insert the policy admitted and only a constraint stopped, since policies are checked first", () => {
+    const r = judge(probe({ command: "insert", targetRows: null }), error("23505"));
+    expect(r.verdict).toBe("PROVEN_VULNERABLE");
+    expect(r.reason).toContain("only a table constraint");
+  });
+
+  it("does not apply the constraint rule to reads or to legitimate inserts", () => {
+    expect(judge(probe({ command: "update" }), error("23505")).verdict).toBe("INCONCLUSIVE");
+    expect(judge(probe({ kind: "own-insert", intent: "legitimate", command: "insert", targetRows: null }), error("23502")).verdict).toBe("INCONCLUSIVE");
   });
 
   it("treats a timeout as inconclusive", () => {
