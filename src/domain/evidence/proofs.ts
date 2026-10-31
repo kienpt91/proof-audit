@@ -77,7 +77,9 @@ const verdicts = Object.keys(VERDICTS) as Verdict[];
 const hex64 = string({ pattern: /^[0-9a-f]{64}$/, max: 64 });
 const shortText = string({ max: 1_000 });
 
-const inputRecord = object({ path: string({ max: 4_096 }), sha256: hex64, bytes: integer() });
+/** A recorded input path: no NUL and no `..` segment, so it can only name something under the directory it is resolved against. */
+const inputPath = string({ max: 4_096, min: 1, pattern: /^(?!.*(?:^|[\\/])\.\.(?:[\\/]|$))[^\u0000]+$/ });
+const inputRecord = object({ path: inputPath, sha256: hex64, bytes: integer() });
 
 const observation: Validator<Proof["observation"]> = (value, path) => {
   const status = typeof value === "object" && value !== null && "status" in value ? value.status : undefined;

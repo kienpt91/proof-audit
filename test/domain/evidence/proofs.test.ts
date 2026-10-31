@@ -284,6 +284,16 @@ describe("decodeProofsJsonl: tampering", () => {
     const negative = [edit(ls[0] as string, (o) => (o.inputs = [{ path: "a.sql", sha256: sha, bytes: -1 }])), ...ls.slice(1)];
     expect(failure(join(negative))).toContain("line 1.inputs[0].bytes");
   });
+
+  it.each(["../outside.sql", "a/../../b.sql", "..", "a/..", "a\\..\\b.sql", "x\u0000y.sql", ""])("rejects the recorded input path %j, which could name something outside the directory it is resolved against", (path) => {
+    const bad = [edit(ls[0] as string, (o) => (o.inputs = [{ path, sha256: sha, bytes: 1 }])), ...ls.slice(1)];
+    expect(failure(join(bad))).toContain("line 1.inputs[0].path");
+  });
+
+  it.each(["supabase/migrations/001.sql", "a.sql", "dir/..hidden/x.sql", "/abs/inside/root.sql", "a..b/c.sql"])("accepts the recorded input path %j", (path) => {
+    const good = [edit(ls[0] as string, (o) => (o.inputs = [{ path, sha256: sha, bytes: 1 }])), ...ls.slice(1)];
+    expect(decodeProofsJsonl(join(good)).ok).toBe(true);
+  });
 });
 
 describe("decodeProofsJsonl: fixSha256", () => {
