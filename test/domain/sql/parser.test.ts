@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { COMMANDS, qualifiedKey, type Column, type Table, type View } from "../../../src/domain/schema/model.js";
 import { parseMigrations } from "../../../src/domain/sql/parser.js";
+import { growth, MAX_GROWTH } from "../../helpers/growth.js";
 
 const parse = (sql: string) => parseMigrations([{ path: "m.sql", content: sql }]);
 
@@ -890,10 +891,9 @@ describe("robustness", () => {
     expect(parse(deep).model.tables[0]?.columns[0]?.name).toBe("a");
   });
 
-  it("handles a huge number of columns quickly", () => {
-    const columns = Array.from({ length: 5000 }, (_, i) => `c${i} int`).join(", ");
-    const started = Date.now();
-    expect(parse(`create table t (${columns});`).model.tables[0]?.columns).toHaveLength(5000);
-    expect(Date.now() - started).toBeLessThan(3000);
+  it("handles a huge number of columns in linear time", () => {
+    const table = (n: number) => `create table t (${Array.from({ length: n }, (_, i) => `c${i} int`).join(", ")});`;
+    expect(parse(table(5000)).model.tables[0]?.columns).toHaveLength(5000);
+    expect(growth(table, 625, (sql) => parse(sql))).toBeLessThan(MAX_GROWTH);
   });
 });

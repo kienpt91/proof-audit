@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { tokenize, type Token } from "../../../src/domain/sql/tokenizer.js";
+import { growth, MAX_GROWTH } from "../../helpers/growth.js";
 
 const kinds = (source: string): string[] => tokenize(source).map((t) => t.kind);
 const values = (source: string): string[] => tokenize(source).map((t) => t.value);
@@ -268,29 +269,22 @@ describe("tokenize robustness", () => {
   });
 
   it("stays linear on a megabyte of nested comment openers", () => {
-    const started = Date.now();
-    const tokens = tokenize("/*".repeat(500_000));
-    expect(tokens).toEqual([]);
-    expect(Date.now() - started).toBeLessThan(2000);
+    expect(tokenize("/*".repeat(500_000))).toEqual([]);
+    expect(growth((n) => "/*".repeat(n), 62_500, (s) => tokenize(s))).toBeLessThan(MAX_GROWTH);
   });
 
   it("stays linear on many unterminated dollar quote openers", () => {
-    const started = Date.now();
-    const tokens = tokenize("$a$ ".repeat(200_000));
-    expect(tokens.length).toBeGreaterThan(0);
-    expect(Date.now() - started).toBeLessThan(2000);
+    expect(tokenize("$a$ ".repeat(200_000)).length).toBeGreaterThan(0);
+    expect(growth((n) => "$a$ ".repeat(n), 25_000, (s) => tokenize(s))).toBeLessThan(MAX_GROWTH);
   });
 
   it("stays linear on a long run of quote characters", () => {
-    const started = Date.now();
-    tokenize("'".repeat(1_000_000));
-    tokenize('"'.repeat(1_000_000));
-    expect(Date.now() - started).toBeLessThan(2000);
+    expect(growth((n) => "'".repeat(n), 125_000, (s) => tokenize(s))).toBeLessThan(MAX_GROWTH);
+    expect(growth((n) => '"'.repeat(n), 125_000, (s) => tokenize(s))).toBeLessThan(MAX_GROWTH);
   });
 
   it("stays linear on many short tokens", () => {
-    const started = Date.now();
     expect(tokenize("a,".repeat(400_000))).toHaveLength(800_000);
-    expect(Date.now() - started).toBeLessThan(2000);
+    expect(growth((n) => "a,".repeat(n), 50_000, (s) => tokenize(s))).toBeLessThan(MAX_GROWTH);
   });
 });
