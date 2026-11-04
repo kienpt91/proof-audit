@@ -806,3 +806,7 @@ Nothing below exists yet; it is where the same idea (a proof you can replay, the
 ## Dependencies and licence
 
 One runtime dependency (`pg`, exact pin, loopback transport only); development: TypeScript 6.0.3, vitest 5.0.5 with `@vitest/coverage-v8`, `@types/node`, `@types/pg`. All versions were resolved with `npm install --before=2026-10-24T00:00:00Z --ignore-scripts`, the lockfile is verified with `npm ci --ignore-scripts` on amd64 and arm64, `npm audit` reports 0 vulnerabilities with and without `--omit=dev`, and no locked package is newer than the cutoff. MIT licence, copyright Kien Phan.
+
+## Releasing
+
+Releases are cut by pushing a `vMAJOR.MINOR.PATCH` tag. The `release` workflow then verifies the code, builds the files, writes `SHA256SUMS`, attests where they were built and creates the GitHub release. See [RELEASING.md](RELEASING.md) for how to cut a release and how to verify a download with `gh attestation verify`.
