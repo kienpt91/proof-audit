@@ -1,6 +1,6 @@
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
-import { auditPriorityTables, parseAuditReport, qualifyTableName, tableFromTitle, type ParsedAudit } from "../../../src/domain/audit/import.js";
+import { auditPriorityTables, parseAuditReport, policyFromTitle, qualifyTableName, staticSubject, tableFromTitle, type ParsedAudit } from "../../../src/domain/audit/import.js";
 import { LIMITS } from "../../../src/domain/limits.js";
 
 const fixture = (name: string): string => readFileSync(new URL(`../../fixtures/audit/${name}`, import.meta.url), "utf8");
@@ -252,7 +252,7 @@ describe("auditPriorityTables", () => {
     version: null,
     project: null,
     totalFindings: items.length,
-    findings: items.map(([rule, severity, table]) => ({ rule, severity: severity as "high", file: "f", line: 1, title: "t", message: "", table })),
+    findings: items.map(([rule, severity, table]) => ({ rule, severity: severity as "high", file: "f", line: 1, title: "t", message: "", table, subject: null })),
   });
 
   it("orders by the most severe finding, then alphabetically", () => {
@@ -284,5 +284,42 @@ describe("auditPriorityTables", () => {
 
   it("ranks the example app: feedback and invoices (critical) before profiles and projects (high) before notes", () => {
     expect(auditPriorityTables(parsed(fixture("vibe-app.json")))).toEqual(["public.feedback", "public.invoices", "public.profiles", "public.projects", "public.notes"]);
+  });
+});
+
+describe("the subject of a static finding", () => {
+  const one = (over: Record<string, unknown>): ParsedAudit["findings"][number] => {
+    const audit = parsed(JSON.stringify({ tool: { name: "saas-audit", version: "1" }, findings: [finding(over)] }));
+    const first = audit.findings[0];
+    if (first === undefined) throw new Error("no finding");
+    return first;
+  };
+
+  it("reads the optional subject array and ignores anything else", () => {
+    expect(one({ subject: ["public.docs", "Owner write"] }).subject).toEqual(["public.docs", "Owner write"]);
+    expect(one({}).subject).toBeNull();
+    expect(one({ subject: [] }).subject).toBeNull();
+    expect(one({ subject: "public.docs" }).subject).toBeNull();
+    expect(one({ subject: [1, 2] }).subject).toBeNull();
+  });
+
+  it("takes the policy name from the title when it has the shape the auditor prints", () => {
+    expect(policyFromTitle('Policy "Anyone can use tickets" lets every role including anon read and write every row of tickets')).toBe("Anyone can use tickets");
+    expect(policyFromTitle('Policy "x" allows the anon role to write to public.t')).toBe("x");
+    expect(policyFromTitle('Policy "say "hi"" lets authenticated update every row of docs')).toBe('say "hi"');
+    expect(policyFromTitle("Table public.profiles has no row level security")).toBeNull();
+    expect(policyFromTitle("")).toBeNull();
+  });
+
+  it("prefers the subject array to the title", () => {
+    const f = one({ rule: "supabase-policy-permissive", title: 'Policy "a" lets authenticated update every row of docs', subject: ["app.docs", 'a "b"'] });
+    expect(staticSubject(f)).toEqual({ table: "app.docs", policy: 'a "b"' });
+    expect(staticSubject(one({ subject: ["notes"] }))).toEqual({ table: "public.notes", policy: null });
+  });
+
+  it("falls back to the title for the table and the policy", () => {
+    const f = one({ rule: "supabase-policy-permissive", title: 'Policy "Owner write" lets authenticated update every row of docs' });
+    expect(staticSubject(f)).toEqual({ table: "public.docs", policy: "Owner write" });
+    expect(staticSubject(one({}))).toEqual({ table: "public.notes", policy: null });
   });
 });

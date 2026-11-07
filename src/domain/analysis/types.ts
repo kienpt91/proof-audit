@@ -1,4 +1,5 @@
 import type { Proof } from "../proof/types.js";
+import type { SchemaModel } from "../schema/model.js";
 
 export type Tier = "PROVEN" | "SUSPECTED" | "CLEAN" | "INCONCLUSIVE";
 export type Severity = "critical" | "high" | "medium" | "low" | "info";
@@ -183,6 +184,11 @@ export interface AnalysisReport {
   readonly summary: AnalysisSummary;
   /** Ordered: tier (PROVEN first), severity, then name. */
   readonly findings: readonly Finding[];
+  /**
+   * The schema the findings were judged on: the database's own catalog model, plus the tables the migrations declare but
+   * the database does not have. It is input to the findings.json export and is not part of `report.json`.
+   */
+  readonly model: SchemaModel;
   /** Every probe run against the original schema. */
   readonly proofs: readonly Proof[];
   readonly seeding: readonly SeedTableResult[];

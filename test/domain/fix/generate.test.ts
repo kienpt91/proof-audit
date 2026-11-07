@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { Finding } from "../../../src/domain/analysis/types.js";
 import { applyFixOutcome } from "../../../src/domain/fix/outcome.js";
-import { generateFix } from "../../../src/domain/fix/generate.js";
+import { fixSectionFor, generateFix } from "../../../src/domain/fix/generate.js";
 import { ALL, col, model, notes, OWN, pk, policy, tbl, userFk, view } from "../../helpers/model.js";
 
 function finding(subject: string, tier: Finding["tier"] = "PROVEN", kind: Finding["subjectKind"] = "table"): Finding {
@@ -141,5 +141,31 @@ describe("applyFixOutcome", () => {
     expect(applyFixOutcome([f], plan, null)[0]).toBe(f);
     const clean = finding("public.notes", "CLEAN");
     expect(applyFixOutcome([clean], plan, verification("VERIFIED", sub("VERIFIED")))[0]).toBe(clean);
+  });
+});
+
+describe("fixSectionFor", () => {
+  const plan = generateFix(model([notes({ rlsEnabled: false, policies: [], privileges: { anon: ALL, authenticated: ALL } }), tbl("plans", [pk(), col("name", "text")], { rlsEnabled: false })]), [
+    finding("public.notes"),
+    finding("public.plans"),
+  ]);
+
+  it("returns the comments and statements of one subject and nothing of the others", () => {
+    const section = fixSectionFor(plan.sql, "public.notes");
+    expect(section?.startsWith("-- public.notes\n")).toBe(true);
+    expect(section).toContain('CREATE POLICY "notes_select_own"');
+    expect(section).toContain('REVOKE ALL ON TABLE "public"."notes" FROM anon;');
+    expect(section).not.toContain("plans");
+    expect(section?.endsWith(";\n")).toBe(true);
+  });
+
+  it("has no section for a subject that needs a decision, or for one that is not in the file", () => {
+    expect(plan.needsDecision.map((d) => d.subject)).toEqual(["public.plans"]);
+    expect(fixSectionFor(plan.sql, "public.plans")).toBeNull();
+    expect(fixSectionFor(plan.sql, "public.other")).toBeNull();
+  });
+
+  it("does not match a subject that only shares a prefix", () => {
+    expect(fixSectionFor(plan.sql, "public.note")).toBeNull();
   });
 });

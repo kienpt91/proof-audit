@@ -126,6 +126,7 @@ export async function analyzeRls(request: AnalyzeRequest, deps: AnalyzeDeps): Pr
         probesProven: before.proofs.filter((p) => p.verdict === "PROVEN_VULNERABLE").length,
       },
       findings,
+      model: findingModel,
       proofs: before.proofs,
       seeding,
       fix,

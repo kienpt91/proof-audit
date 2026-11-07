@@ -157,3 +157,14 @@ export function generateFix(model: SchemaModel, findings: readonly Finding[]): F
     needsDecision,
   };
 }
+
+/**
+ * The part of a generated fix file that is about one subject: the comment header `-- <subject>`, its notes and its
+ * statements, up to the next blank line. Null when the file has no such section (a subject that needs a decision has
+ * a different header and no statements).
+ */
+export function fixSectionFor(sql: string, subject: string): string | null {
+  const header = commentLine(subject);
+  const block = sql.split("\n\n").find((b) => b.split("\n")[0] === header);
+  return block === undefined ? null : `${block.trimEnd()}\n`;
+}

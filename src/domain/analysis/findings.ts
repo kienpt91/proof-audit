@@ -47,12 +47,21 @@ export function attackerSentence(subject: string, proven: readonly ProbeKind[]):
 const ANON_WRITES: readonly ProbeKind[] = ["anon-insert", "anon-update", "anon-delete"];
 const USER_WRITES: readonly ProbeKind[] = ["cross-insert", "cross-update", "cross-delete", "reassign-owner"];
 
+/** The rows of the severity anchor table (docs: "Severity anchors"). Each proven set of attacks lands on exactly one. */
+export type SeverityAnchorId = "anon-write" | "anon-read-owned" | "anon-read-unowned" | "cross-user" | "other";
+
 /** Severity of a proven problem. Writes by strangers and any anonymous read of per-user data are the worst. */
+export function severityAnchor(proven: readonly ProbeKind[], hasOwnerColumn: boolean, subjectKind: "table" | "view"): { readonly id: SeverityAnchorId; readonly severity: Severity } {
+  if (proven.some((k) => ANON_WRITES.includes(k))) return { id: "anon-write", severity: "critical" };
+  if (proven.includes("anon-read") || proven.includes("view-read-anon")) {
+    return hasOwnerColumn || subjectKind === "view" ? { id: "anon-read-owned", severity: "critical" } : { id: "anon-read-unowned", severity: "medium" };
+  }
+  if (proven.some((k) => USER_WRITES.includes(k)) || proven.includes("cross-read") || proven.includes("view-read-cross")) return { id: "cross-user", severity: "high" };
+  return { id: "other", severity: "medium" };
+}
+
 export function severityOf(proven: readonly ProbeKind[], hasOwnerColumn: boolean, subjectKind: "table" | "view"): Severity {
-  if (proven.some((k) => ANON_WRITES.includes(k))) return "critical";
-  if (proven.includes("anon-read") || proven.includes("view-read-anon")) return hasOwnerColumn || subjectKind === "view" ? "critical" : "medium";
-  if (proven.some((k) => USER_WRITES.includes(k)) || proven.includes("cross-read") || proven.includes("view-read-cross")) return "high";
-  return "medium";
+  return severityAnchor(proven, hasOwnerColumn, subjectKind).severity;
 }
 
 function tierFor(exploits: readonly Proof[], causes: readonly Cause[]): Tier {

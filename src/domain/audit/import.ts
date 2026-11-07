@@ -13,6 +13,8 @@ export interface ParsedAuditFinding {
   readonly message: string;
   /** Qualified table (`schema.name`, `public.` when the title gave no schema); null when none could be read. */
   readonly table: string | null;
+  /** The `subject` array newer reports carry (`[table]` or `[table, policy name]`); null when absent or not a list of strings. */
+  readonly subject: readonly string[] | null;
 }
 
 export interface ParsedAudit {
@@ -132,6 +134,8 @@ function severityOf(value: unknown): Severity {
   return Object.hasOwn(SEVERITY_RANK, lowered) ? (lowered as Severity) : "info";
 }
 
+const subjectNames = array(string({ max: 4_000 }), { max: 8 });
+
 const findingValidator: Validator<ParsedAuditFinding> = (value, path) => {
   if (!isRecord(value)) return err(`${path}: expected an object`);
   const rule = ruleText(value.rule, `${path}.rule`);
@@ -144,6 +148,7 @@ const findingValidator: Validator<ParsedAuditFinding> = (value, path) => {
   if (!message.ok) return message;
   const line = optionalField(value, "line", lineNumber, path);
   if (!line.ok) return line;
+  const subject = subjectNames(value.subject, `${path}.subject`);
   return ok({
     rule: rule.value,
     severity: severityOf(value.severity),
@@ -152,6 +157,7 @@ const findingValidator: Validator<ParsedAuditFinding> = (value, path) => {
     title: title.value,
     message: message.value ?? "",
     table: isRlsRule(rule.value) ? tableFromTitle(title.value) : null,
+    subject: subject.ok && subject.value.length > 0 ? subject.value : null,
   });
 };
 
@@ -217,4 +223,22 @@ export function auditPriorityTables(audit: ParsedAudit): string[] {
     if (rank > (worst.get(finding.table) ?? -1)) worst.set(finding.table, rank);
   }
   return [...worst.entries()].sort(([ta, ra], [tb, rb]) => rb - ra || compare(ta, tb)).map(([table]) => table);
+}
+
+/** `Policy "<name>" lets ...` and `Policy "<name>" allows the anon role to ...`: the name may itself contain quotes, so it is the greedy part. */
+const POLICY_TITLE = /^Policy "(.*)" (?:lets .+ every row of |allows the anon role to )/s;
+
+/** The policy a row level security finding is about, from its title; null for findings about a table. */
+export function policyFromTitle(title: string): string | null {
+  return POLICY_TITLE.exec(title)?.[1] ?? null;
+}
+
+/**
+ * The table and policy a static finding is about. A `subject` array in the report wins over the title, because a
+ * policy name containing quotes makes the title ambiguous.
+ */
+export function staticSubject(finding: ParsedAuditFinding): { readonly table: string | null; readonly policy: string | null } {
+  const [first, second] = finding.subject ?? [];
+  if (first === undefined) return { table: finding.table, policy: policyFromTitle(finding.title) };
+  return { table: qualifyTableName(first), policy: second ?? null };
 }

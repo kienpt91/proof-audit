@@ -310,8 +310,10 @@ describe("json report", () => {
     expect(json.endsWith("\n\n")).toBe(false);
   });
 
-  it("round-trips to the same data", () => {
-    expect(JSON.parse(json)).toEqual(JSON.parse(JSON.stringify(report)));
+  it("round-trips to the same data, except the schema model that only feeds findings.json", () => {
+    const { model, ...documented } = report;
+    expect(model).toBeDefined();
+    expect(JSON.parse(json)).toEqual(JSON.parse(JSON.stringify(documented)));
   });
 
   it("orders the top-level keys as documented", () => {
@@ -341,8 +343,10 @@ describe("json report", () => {
   it("keeps hostile text as data and escapes control characters", () => {
     const hostile = hostileReport();
     const out = renderJson(hostile);
+    const { model, ...documented } = hostile;
+    expect(model).toBeDefined();
     expect(out).not.toMatch(/[\u0000-\u0009\u000B-\u001F\u007F]/);
-    expect(JSON.parse(out)).toEqual(JSON.parse(JSON.stringify(hostile)));
+    expect(JSON.parse(out)).toEqual(JSON.parse(JSON.stringify(documented)));
     expect(out).toContain("\\u001b[31mred");
   });
 });

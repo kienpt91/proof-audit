@@ -1,12 +1,13 @@
 import { isAbsolute, join, relative, resolve } from "node:path";
 import { analyzeRls } from "../../application/analyze.js";
 import type { Clock, LoadedFile, LoadedFiles, SandboxProvider } from "../../application/ports.js";
+import { renderFindings } from "../../application/report/findings.js";
 import { renderJson } from "../../application/report/json.js";
 import { renderMarkdown } from "../../application/report/markdown.js";
 import { renderPlain } from "../../application/report/plain.js";
 import { verifyEvidence } from "../../application/verify.js";
 import type { AnalysisReport } from "../../domain/analysis/types.js";
-import { parseAuditReport } from "../../domain/audit/import.js";
+import { parseAuditReport, type ParsedAudit } from "../../domain/audit/import.js";
 import { buildContract, encodeContract } from "../../domain/evidence/contract.js";
 import { encodeProofsJsonl } from "../../domain/evidence/proofs.js";
 import { LIMITS } from "../../domain/limits.js";
@@ -56,7 +57,7 @@ function providerFor(database: DatabaseChoice, deps: CliDeps): TrackedProvider |
   return deps.urlProvider(endpoint.value, { yesThisIsThrowaway: database.yesThisIsThrowaway });
 }
 
-function artifacts(report: AnalysisReport, command: Extract<Command, { kind: "rls" }>, out: string, deps: CliDeps): Record<string, string> {
+function artifacts(report: AnalysisReport, command: Extract<Command, { kind: "rls" }>, out: string, deps: CliDeps, loaded: LoadedFiles, audit: ParsedAudit | null): { readonly files: Record<string, string>; readonly notes: readonly string[] } {
   const fix = report.fix?.statements ?? [];
   const proofs = [...report.proofs, ...(report.verification?.after ?? [])];
   const meta = { tool: report.tool, image: report.environment.image, inputs: report.inputs, fixStatements: fix, fixSha256: null };
@@ -74,7 +75,10 @@ function artifacts(report: AnalysisReport, command: Extract<Command, { kind: "rl
     ),
   };
   if (report.fix) files["fix.sql"] = report.fix.sql;
-  return files;
+  // Derived from the report and the migrations; `verify` never reads it.
+  const findings = renderFindings(report, loaded.files, audit);
+  if (findings.json !== null) files["findings.json"] = findings.json;
+  return { files, notes: findings.notes };
 }
 
 async function runRls(command: Extract<Command, { kind: "rls" }>, deps: CliDeps): Promise<number> {
@@ -84,7 +88,7 @@ async function runRls(command: Extract<Command, { kind: "rls" }>, deps: CliDeps)
     return 2;
   }
   let loaded: LoadedFiles;
-  let audit = null;
+  let audit: ParsedAudit | null = null;
   try {
     loaded = await deps.loadSql(command.paths);
     if (command.fromAudit !== null) {
@@ -115,8 +119,10 @@ async function runRls(command: Extract<Command, { kind: "rls" }>, deps: CliDeps)
   deps.stdout(command.format === "json" ? renderJson(report) : command.format === "markdown" ? renderMarkdown(report) : renderPlain(report));
   if (command.out !== null) {
     try {
-      await deps.writeOutputs(command.out, artifacts(report, command, command.out, deps));
-      deps.stderr(`${TOOL}: wrote report.md, report.json, proofs.jsonl, verification-contract.json${report.fix ? " and fix.sql" : ""} to ${terminalText(command.out, 200)}\n`);
+      const written = artifacts(report, command, command.out, deps, loaded, audit);
+      await deps.writeOutputs(command.out, written.files);
+      for (const note of written.notes) deps.stderr(`${TOOL}: ${terminalText(note, 600)}\n`);
+      deps.stderr(`${TOOL}: wrote ${Object.keys(written.files).sort().join(", ")} to ${terminalText(command.out, 200)}\n`);
     } catch (e) {
       deps.stderr(`${TOOL}: ${message(e)}\n`);
       return 2;

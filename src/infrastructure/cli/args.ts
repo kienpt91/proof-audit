@@ -38,7 +38,7 @@ rls options:
   --json                  print the report as JSON
   --markdown              print the report as Markdown
   --out <dir>             also write report.md, report.json, proofs.jsonl,
-                          verification-contract.json and fix.sql into <dir>
+                          verification-contract.json, fix.sql and findings.json into <dir>
   --from-audit <file>     JSON report of the saas-audit static auditor: prioritise its tables
                           and show which of its findings were proven
   --no-fix                do not propose or verify a fix

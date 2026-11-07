@@ -50,50 +50,63 @@ function clientsCanTouch(table: Table): boolean {
   return [...table.privileges.anon, ...table.privileges.authenticated].length > 0;
 }
 
-/** Static reasons why a table may let people in. They explain a proof; on their own they are only suspicions. */
-export function explainTable(table: Table): readonly Cause[] {
-  const out: Cause[] = [];
+/** A cause together with the policy it is about, for callers that need to know which statement is to blame. */
+export interface CauseDetail extends Cause {
+  /** The policy behind the cause; null for causes about the table as a whole. */
+  readonly policy: Policy | null;
+  /** For `owner-not-checked`: the commands for which the policy does not tie the row's owner to the caller. */
+  readonly gaps: readonly Command[];
+}
+
+/** Static reasons why a table may let people in, with the policy each one is about. */
+export function explainTableDetailed(table: Table): readonly CauseDetail[] {
+  const out: CauseDetail[] = [];
   const owner = primaryOwnerColumn(table);
   const ownerColumns = owner ? [owner.column] : [];
   const clientPolicies = table.policies.filter((p) => p.permissive && policyReachesClients(p));
 
   if (!table.rlsEnabled && clientsCanTouch(table)) {
-    out.push({ code: "rls-disabled", text: "Row level security is switched off on this table, so the database applies no row filter at all." });
+    out.push({ code: "rls-disabled", text: "Row level security is switched off on this table, so the database applies no row filter at all.", policy: null, gaps: [] });
   }
   if (table.rlsEnabled && table.policies.length === 0) {
-    out.push({ code: "rls-no-policies", text: "Row level security is on but there are no policies, so every client request is refused (fine for tables only the server touches)." });
+    out.push({ code: "rls-no-policies", text: "Row level security is on but there are no policies, so every client request is refused (fine for tables only the server touches).", policy: null, gaps: [] });
   }
   if (table.rlsEnabled) {
     for (const p of clientPolicies) {
       const always = analyzeExpression(p.using, []).alwaysTrue || analyzeExpression(p.withCheck, []).alwaysTrue;
       const writes = WRITES.some((c) => policyCovers(p, c));
       if (always && policyReachesAnon(p) && writes) {
-        out.push({ code: "policy-anon-write", text: `Policy "${p.name}" lets ${roleList(p)} write (${p.command}) with a condition that is always true.` });
+        out.push({ code: "policy-anon-write", text: `Policy "${p.name}" lets ${roleList(p)} write (${p.command}) with a condition that is always true.`, policy: p, gaps: [] });
       } else if (always) {
-        out.push({ code: "policy-always-true", text: `Policy "${p.name}" has a condition that is always true, so it admits every row for ${roleList(p)} (${p.command}).` });
+        out.push({ code: "policy-always-true", text: `Policy "${p.name}" has a condition that is always true, so it admits every row for ${roleList(p)} (${p.command}).`, policy: p, gaps: [] });
       }
     }
   }
   if (owner && table.privileges.anon.some((c) => WRITES.includes(c))) {
-    out.push({ code: "anon-grant", text: `The anon role (your public key) holds ${table.privileges.anon.filter((c) => WRITES.includes(c)).join(", ")} privileges on this table.` });
+    out.push({ code: "anon-grant", text: `The anon role (your public key) holds ${table.privileges.anon.filter((c) => WRITES.includes(c)).join(", ")} privileges on this table.`, policy: null, gaps: [] });
   }
   if (owner && table.rlsEnabled) {
     for (const p of clientPolicies) {
       const gaps = (["insert", "update"] as const).filter((c) => policyCovers(p, c) && !policySoundFor(p, c, ownerColumns));
       const always = analyzeExpression(p.using, []).alwaysTrue || analyzeExpression(p.withCheck, []).alwaysTrue;
       if (gaps.length > 0 && !always) {
-        out.push({ code: "owner-not-checked", text: `Policy "${p.name}" does not check that ${owner.column} is the caller when a row is written (${gaps.join(", ")}).` });
+        out.push({ code: "owner-not-checked", text: `Policy "${p.name}" does not check that ${owner.column} is the caller when a row is written (${gaps.join(", ")}).`, policy: p, gaps });
       }
     }
     const anyBinding = table.policies.some((p) => bindsOwner(p.using, ownerColumns) || bindsOwner(p.withCheck, ownerColumns));
     if (table.policies.length > 0 && !anyBinding) {
-      out.push({ code: "owner-not-compared", text: `No policy compares ${owner.column} with the signed-in user, so nothing separates one user's rows from another's.` });
+      out.push({ code: "owner-not-compared", text: `No policy compares ${owner.column} with the signed-in user, so nothing separates one user's rows from another's.`, policy: null, gaps: [] });
     }
   }
   if (!owner) {
-    out.push({ code: "no-owner-column", text: "The table has no column that says who owns a row (user_id, owner_id, org_id, ...), so the tool cannot tell whose rows are whose." });
+    out.push({ code: "no-owner-column", text: "The table has no column that says who owns a row (user_id, owner_id, org_id, ...), so the tool cannot tell whose rows are whose.", policy: null, gaps: [] });
   }
   return out;
+}
+
+/** Static reasons why a table may let people in. They explain a proof; on their own they are only suspicions. */
+export function explainTable(table: Table): readonly Cause[] {
+  return explainTableDetailed(table).map(({ code, text }) => ({ code, text }));
 }
 
 export function explainView(view: View, model: SchemaModel): readonly Cause[] {

@@ -2,6 +2,7 @@ import { cpSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:f
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, describe, expect, it } from "vitest";
+import { checkFindingsText } from "../../src/domain/interchange/conformance.js";
 import { decodeContract } from "../../src/domain/evidence/contract.js";
 import { splitShellWords } from "../../src/domain/text/shell.js";
 import { runCli, type CliDeps } from "../../src/infrastructure/cli/main.js";
@@ -51,6 +52,40 @@ describe.skipIf(!haveDatabase)("proof-audit CLI against real PostgreSQL", () => 
     expect(JSON.parse(readFileSync(join(outDir, "report.json"), "utf8")).summary).toMatchObject({ proven: 6, clean: 1 });
     expect(readFileSync(join(outDir, "report.md"), "utf8").startsWith("# ")).toBe(true);
     expect(readFileSync(join(outDir, "proofs.jsonl"), "utf8").split("\n")[0]).toContain('"type":"meta"');
+  });
+
+  it("writes findings.json: one confirmed record per proven table and root cause, pointing at real lines of the migrations", () => {
+    const text = readFileSync(join(outDir, "findings.json"), "utf8");
+    expect(checkFindingsText(text)).toEqual([]);
+    const records: { verdict: string; fingerprint: string; trace: { file: string; line: number }[] }[] = JSON.parse(text);
+    expect(records.map((r) => r.verdict)).toEqual(Array(6).fill("confirmed"));
+    expect(records.map((r) => r.fingerprint.split("/").slice(2, 4).join("/"))).toEqual([
+      "public.documents/policy-owner-unchecked",
+      "public.invoice_summaries/view-bypasses-rls",
+      "public.notes/policy-always-true",
+      "public.profiles/rls-disabled",
+      "public.projects/policy-owner-unchecked",
+      "public.tickets/policy-always-true",
+    ]);
+    const sql = readFileSync(`${VULN}/20260105090000_init.sql`, "utf8").split("\n");
+    for (const r of records) {
+      for (const t of r.trace) {
+        expect(t.file).toBe(`${VULN}/20260105090000_init.sql`);
+        expect(sql[t.line - 1]).toMatch(/^(create|alter)\b/i);
+      }
+    }
+  });
+
+  it("writes the same findings.json on a second run, and a rejected record for a static finding the database refused", async () => {
+    const dir = join(scratch, "again");
+    const r = await run(["rls", VULN, "--out", dir, "--from-audit", "examples/vulnerable-app/saas-audit.json", ...url]);
+    expect(r.code).toBe(1);
+    const records: { verdict: string; fingerprint: string }[] = JSON.parse(readFileSync(join(dir, "findings.json"), "utf8"));
+    const first: { verdict: string; fingerprint: string }[] = JSON.parse(readFileSync(join(outDir, "findings.json"), "utf8"));
+    expect(records.filter((x) => x.verdict !== "rejected")).toEqual(first);
+    expect(records.filter((x) => x.verdict === "rejected").map((x) => x.fingerprint)).toEqual([
+      "saas-audit/supabase-policy-permissive:supabase/migrations/20260105090000_init.sql:public.documents:Owners+20can+20edit+20documents",
+    ]);
   });
 
   it("writes a verification contract whose commands are plain proof-audit invocations", () => {

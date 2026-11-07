@@ -7,7 +7,7 @@ import { sealProof } from "../../../src/domain/proof/hash.js";
 import type { ProbeKind, Proof, Verdict } from "../../../src/domain/proof/types.js";
 
 function staticFinding(over: Partial<ParsedAuditFinding> = {}): ParsedAuditFinding {
-  return { rule: "supabase-rls-missing", severity: "high", file: "m.sql", line: 1, title: "t", message: "", table: "public.notes", ...over };
+  return { rule: "supabase-rls-missing", severity: "high", file: "m.sql", line: 1, title: "t", message: "", table: "public.notes", subject: null, ...over };
 }
 
 function audit(findings: readonly ParsedAuditFinding[], over: Partial<ParsedAudit> = {}): ParsedAudit {

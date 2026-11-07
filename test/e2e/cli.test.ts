@@ -1,6 +1,8 @@
 import { describe, expect, it } from "vitest";
 import type { LoadedFiles, SandboxProvider } from "../../src/application/ports.js";
 import { decodeContract } from "../../src/domain/evidence/contract.js";
+import { checkFindingsText } from "../../src/domain/interchange/conformance.js";
+import type { FindingRecord } from "../../src/domain/interchange/records.js";
 import type { LoopbackEndpoint } from "../../src/domain/safety/loopback.js";
 import { runCli, type CliDeps, type TrackedProvider } from "../../src/infrastructure/cli/main.js";
 import { InputError } from "../../src/infrastructure/fs/files.js";
@@ -114,7 +116,7 @@ describe("proof-audit rls", () => {
     const h = harness(vulnerable);
     await run(h, "rls", "supabase/migrations", "--out", "out/audit");
     const files = h.written.get("out/audit");
-    expect(Object.keys(files ?? {}).sort()).toEqual(["fix.sql", "proofs.jsonl", "report.json", "report.md", "verification-contract.json"]);
+    expect(Object.keys(files ?? {}).sort()).toEqual(["findings.json", "fix.sql", "proofs.jsonl", "report.json", "report.md", "verification-contract.json"]);
     expect(files?.["fix.sql"]).toContain("STARTING POINT");
     const contract = decodeContract(files?.["verification-contract.json"] ?? "");
     expect(contract.ok && contract.value.checks.map((c) => c.command)).toEqual([
@@ -130,6 +132,47 @@ describe("proof-audit rls", () => {
     expect("fix.sql" in files).toBe(false);
     const contract = decodeContract(files["verification-contract.json"] ?? "");
     expect(contract.ok && contract.value.checks).toHaveLength(1);
+  });
+
+  it("writes findings.json in the findings format, derived from the same run", async () => {
+    const h = harness(vulnerable);
+    await run(h, "rls", "supabase/migrations", "--out", "out/audit");
+    const text = h.written.get("out/audit")?.["findings.json"] ?? "";
+    expect(checkFindingsText(text)).toEqual([]);
+    const records: FindingRecord[] = JSON.parse(text);
+    expect(records).toHaveLength(1);
+    expect(records[0]).toMatchObject({ verdict: "confirmed", fingerprint: "proof-audit/rls/public.notes/rls-disabled" });
+    expect(records[0]?.trace[0]).toMatchObject({ file: "supabase/migrations/001.sql", line: 1 });
+    expect(stderr(h)).toContain("wrote findings.json, fix.sql, proofs.jsonl, report.json, report.md, verification-contract.json to out/audit");
+  });
+
+  it("writes an empty findings.json for a clean schema", async () => {
+    const h = harness(clean);
+    await run(h, "rls", "supabase/migrations", "--out", "o");
+    expect(h.written.get("o")?.["findings.json"]).toBe("[]\n");
+  });
+
+  it("writes only candidates when the run is quarantined", async () => {
+    const h = harness(vulnerable, { "m/001.sql": `create or replace function auth.uid() returns uuid language sql as $$ select null::uuid $$;\n${SQL}` });
+    expect(await run(h, "rls", "m", "--out", "o")).toBe(4);
+    const records: FindingRecord[] = JSON.parse(h.written.get("o")?.["findings.json"] ?? "[]");
+    expect(records.map((r) => r.verdict)).toEqual(["needs_validation"]);
+  });
+
+  it("does not write findings.json, and says why, when an input path cannot be a repository-relative path", async () => {
+    const h = harness(vulnerable, { "/elsewhere/001.sql": SQL });
+    await run(h, "rls", "/elsewhere", "--out", "o");
+    const files = h.written.get("o") ?? {};
+    expect("findings.json" in files).toBe(false);
+    expect("report.json" in files).toBe(true);
+    expect(stderr(h)).toContain("findings.json was not written");
+    expect(stderr(h)).toContain("project root");
+  });
+
+  it("writes findings.json only with --out", async () => {
+    const h = harness(vulnerable);
+    await run(h, "rls", "supabase/migrations", "--json");
+    expect(h.written.size).toBe(0);
   });
 
   it("does not propose a fix with --no-fix", async () => {
@@ -295,6 +338,17 @@ describe("proof-audit verify", () => {
     const h = await recorded();
     const fixed = harness(clean, { "supabase/migrations/002.sql": "-- fixed\n", "out/proofs.jsonl": h.files.get("out/proofs.jsonl") ?? "" });
     expect(await run(fixed, "verify", "out/proofs.jsonl", "--against", "supabase/migrations")).toBe(0);
+  });
+
+  it("neither reads nor trusts findings.json: a tampered copy changes nothing", async () => {
+    const h = await recorded();
+    const reads: string[] = [];
+    const readText = h.deps.readText;
+    h.deps = { ...h.deps, readText: async (path, max) => (reads.push(path), readText(path, max)) };
+    h.files.set("out/findings.json", "this is not json");
+    expect(await run(h, "verify", "out/proofs.jsonl")).toBe(0);
+    expect(reads.some((p) => p.includes("findings"))).toBe(false);
+    expect(await run(h, "verify", "out/findings.json")).toBe(2);
   });
 
   it("exits 3 when an input changed since the evidence was written", async () => {

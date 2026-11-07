@@ -105,6 +105,7 @@ function baseReport(over: Partial<AnalysisReport> & Pick<AnalysisReport, "summar
     migrationErrors: [],
     warnings: [],
     notChecked: ["Storage bucket policies", "Edge functions and webhooks", "Anything outside the SQL you gave us"],
+    model: { tables: [], views: [] },
     ...over,
   };
 }
@@ -631,6 +632,7 @@ export function makeInjectionReport(h: (label: string) => string, sql: (label: s
   const after = [hostileProof(pid, "anon-read", { status: "rows", rows: 0 }, "NOT_REPRODUCED", "after", subject)];
   return {
     tool: { name: h("tool-name"), version: h("tool-version") },
+    model: { tables: [], views: [] },
     inputs: [{ path: h("input-path"), sha256: h("input-sha"), bytes: 10 }],
     environment: { mode: "docker", image: h("image"), postgresVersion: h("pg-version") },
     complete: false,
