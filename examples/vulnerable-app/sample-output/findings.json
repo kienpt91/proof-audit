@@ -1,0 +1,733 @@
+[
+  {
+    "verdict": "confirmed",
+    "fingerprint": "proof-audit/rls/public.documents/policy-owner-unchecked/Signed-in+20users+20can+20add+20documents",
+    "title": "Policy \"Signed-in users can add documents\" on public.documents does not tie written rows to their owner",
+    "description": "Any signed-in user can create rows in other users' names in public.documents. Reproduced against a throwaway PostgreSQL database: 1 of the 9 attacks run on public.documents were let through (cross-insert).",
+    "root_cause": "Policy \"Signed-in users can add documents\" does not check that owner_id is the caller when a row is written (insert).",
+    "intended_behavior": "A signed-in user should read and change only rows whose owner_id is theirs, and the anonymous role (the public key) should have no access to rows of this table.",
+    "trace": [
+      {
+        "kind": "entrypoint",
+        "file": "examples/vulnerable-app/supabase/migrations/20260105090000_init.sql",
+        "line": 60,
+        "scope": "policy \"Signed-in users can add documents\" on public.documents",
+        "description": "Policy \"Signed-in users can add documents\" does not check that owner_id is the caller when a row is written (insert)."
+      },
+      {
+        "kind": "propagation",
+        "file": "examples/vulnerable-app/supabase/migrations/20260105090000_init.sql",
+        "line": 57,
+        "scope": "table public.documents",
+        "description": "Row level security is on, so policies decide access; this policy admits the rows."
+      },
+      {
+        "kind": "sink",
+        "file": "examples/vulnerable-app/supabase/migrations/20260105090000_init.sql",
+        "line": 51,
+        "scope": "table public.documents",
+        "description": "The table that holds the rows the probes read and changed."
+      }
+    ],
+    "evidence": [
+      {
+        "file": "examples/vulnerable-app/supabase/migrations/20260105090000_init.sql",
+        "line": 60,
+        "description": "Policy \"Signed-in users can add documents\" does not check that owner_id is the caller when a row is written (insert)."
+      },
+      {
+        "file": "examples/vulnerable-app/supabase/migrations/20260105090000_init.sql",
+        "line": 60,
+        "description": "Probe public.documents/cross-insert (recorded in proofs.jsonl, content hash sha256:f27281fd2ea7edb174d34698c80b9b86876d28f3fb15f4d996382db0b3a96ad3): the statement changed 1 row"
+      }
+    ],
+    "conditions": [
+      {
+        "kind": "authentication_level",
+        "description": "Signed in as an ordinary user (synthetic user A, alice@example.test): database role authenticated. request.jwt.claims: {\"app_metadata\":{\"org_id\":\"a1a1a1a1-a1a1-4a1a-8a1a-a1a1a1a1a1a1\",\"provider\":\"email\",\"tenant_id\":\"a1a1a1a1-a1a1-4a1a-8a1a-a1a1a1a1a1a1\"},\"aud\":\"authenticated\",\"email\":\"alice@example.test\",\"org_id\":\"a1a1a1a1-a1a1-4a1a-8a1a-a1a1a1a1a1a1\",\"role\":\"authenticated\",\"sub\":\"aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa\",\"tenant_id\":\"a1a1a1a1-a1a1-4a1a-8a1a-a1a1a1a1a1a1\",\"user_metadata\":{}}"
+      },
+      {
+        "kind": "authorization_role",
+        "description": "Database role authenticated; no elevated role such as service_role is used. The rows that are attacked belong to synthetic user B (bob@example.test)."
+      }
+    ],
+    "execution": {
+      "attacker_perspective": "Any signed-in user can create rows in other users' names in public.documents.",
+      "payloads": [
+        "INSERT INTO \"public\".\"documents\" (\"id\", \"owner_id\", \"title\", \"body\") VALUES ('2511056d-6edd-4291-94ab-1c262ec4bf33', 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb', 'Synthetic title (Bob)', 'Synthetic body from Bob')"
+      ],
+      "instructions": [
+        "Create a throwaway PostgreSQL database with the Supabase roles (anon, authenticated, service_role) and auth.uid() reading request.jwt.claims, apply the migrations as a non-superuser, and insert one row for each of two synthetic users, A (alice@example.test) and B (bob@example.test). `proof-audit rls <migrations> --out <dir>` does this and records every probe in proofs.jsonl.",
+        "In a transaction that you roll back afterwards, SET LOCAL ROLE and SET LOCAL request.jwt.claims as user A (role authenticated), using the role and claims in the conditions, then run payload 1.",
+        "Replay the recorded probes with `proof-audit verify <dir>/proofs.jsonl`: it regenerates these statements from the migrations and compares the database's answers by content hash."
+      ],
+      "observed_result": "1 probe(s) were PROVEN_VULNERABLE: the database let the statement through.\npublic.documents/cross-insert as authenticated: Signed-in user A adds a row owned by user B: the statement changed 1 row"
+    },
+    "remediation": {
+      "strategy": "Rewrite policy \"Signed-in users can add documents\" on public.documents so that both its USING and its WITH CHECK condition tie owner_id to the caller (owner_id = (select auth.uid())). Fix verified: 1 attack now fails and 4 legitimate actions still work. The generated fix.sql section for public.documents is attached as a starting point; review it before use.",
+      "code_changes": [
+        {
+          "file_name": "fix.sql",
+          "fixed_code": "-- public.documents\n-- Drop policy \"Owners can edit documents\": it does not tie every command to the row's owner.\n-- Drop policy \"Signed-in users can add documents\": it does not tie every command to the row's owner.\n-- Allow signed-in users to insert, update only rows whose owner_id is theirs.\n-- Take every privilege away from the anon role (the public key).\nDROP POLICY IF EXISTS \"Owners can edit documents\" ON \"public\".\"documents\";\nDROP POLICY IF EXISTS \"Signed-in users can add documents\" ON \"public\".\"documents\";\nCREATE POLICY \"documents_insert_own\" ON \"public\".\"documents\" FOR INSERT TO authenticated WITH CHECK (\"owner_id\" = (select auth.uid()));\nCREATE POLICY \"documents_update_own\" ON \"public\".\"documents\" FOR UPDATE TO authenticated USING (\"owner_id\" = (select auth.uid())) WITH CHECK (\"owner_id\" = (select auth.uid()));\nREVOKE ALL ON TABLE \"public\".\"documents\" FROM anon;\n"
+        }
+      ]
+    },
+    "severity": {
+      "likelihood": {
+        "score": "medium",
+        "reason": "The attack needs a signed-in account; the tool did not check whether anyone can sign up. It was reproduced against a real database with an ordinary user."
+      },
+      "impact": {
+        "score": "high",
+        "reason": "A signed-in user could read or change rows that belong to another user, or give a row away."
+      },
+      "overall_severity": "high"
+    },
+    "confidence": {
+      "score": "high",
+      "reason": "Reproduced against a real database (1 probe(s) PROVEN_VULNERABLE) and the before/after check passed: Fix verified: 1 attack now fails and 4 legitimate actions still work."
+    }
+  },
+  {
+    "verdict": "confirmed",
+    "fingerprint": "proof-audit/rls/public.invoice_summaries/view-bypasses-rls",
+    "title": "View public.invoice_summaries bypasses row level security",
+    "description": "Anyone with your public anon key can read the rows behind public.invoice_summaries, and any signed-in user can read other users' rows through the view. Reproduced against a throwaway PostgreSQL database: 2 of the 2 attacks run on public.invoice_summaries were let through (view-read-anon, view-read-cross).",
+    "root_cause": "The view runs with its owner's rights (it is not security_invoker), so the row level security on public.invoices is skipped when the view is read.",
+    "intended_behavior": "A view over per-user rows should apply the caller's row level security (security_invoker), so each signed-in user sees only their own rows and the anonymous role sees none.",
+    "trace": [
+      {
+        "kind": "entrypoint",
+        "file": "examples/vulnerable-app/supabase/migrations/20260105090000_init.sql",
+        "line": 99,
+        "scope": "view public.invoice_summaries",
+        "description": "The view runs with its owner's rights (it is not security_invoker), so the row level security on public.invoices is skipped when the view is read."
+      },
+      {
+        "kind": "sink",
+        "file": "examples/vulnerable-app/supabase/migrations/20260105090000_init.sql",
+        "line": 85,
+        "scope": "table public.invoices",
+        "description": "A table with row level security that the view reads with its owner's rights."
+      }
+    ],
+    "evidence": [
+      {
+        "file": "examples/vulnerable-app/supabase/migrations/20260105090000_init.sql",
+        "line": 99,
+        "description": "The view runs with its owner's rights (it is not security_invoker), so the row level security on public.invoices is skipped when the view is read."
+      },
+      {
+        "file": "examples/vulnerable-app/supabase/migrations/20260105090000_init.sql",
+        "line": 99,
+        "description": "Probe public.invoice_summaries/view-read-anon (recorded in proofs.jsonl, content hash sha256:84ca98065febc5acec8e8a8b1b5682ff040a57c0d1434f65ba40fce00013486b): the statement returned 2 rows"
+      },
+      {
+        "file": "examples/vulnerable-app/supabase/migrations/20260105090000_init.sql",
+        "line": 99,
+        "description": "Probe public.invoice_summaries/view-read-cross (recorded in proofs.jsonl, content hash sha256:db4e5ef0c5b15b7286671a0ba170d61f4882e5d120837830907c7bdf79f35d1d): the statement returned 1 row"
+      }
+    ],
+    "conditions": [
+      {
+        "kind": "authentication_level",
+        "description": "No sign-in: the request carries the public anon key (database role anon). request.jwt.claims: {\"role\":\"anon\"}"
+      },
+      {
+        "kind": "authorization_role",
+        "description": "Database role anon; no elevated role such as service_role is used."
+      },
+      {
+        "kind": "authentication_level",
+        "description": "Signed in as an ordinary user (synthetic user A, alice@example.test): database role authenticated. request.jwt.claims: {\"app_metadata\":{\"org_id\":\"a1a1a1a1-a1a1-4a1a-8a1a-a1a1a1a1a1a1\",\"provider\":\"email\",\"tenant_id\":\"a1a1a1a1-a1a1-4a1a-8a1a-a1a1a1a1a1a1\"},\"aud\":\"authenticated\",\"email\":\"alice@example.test\",\"org_id\":\"a1a1a1a1-a1a1-4a1a-8a1a-a1a1a1a1a1a1\",\"role\":\"authenticated\",\"sub\":\"aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa\",\"tenant_id\":\"a1a1a1a1-a1a1-4a1a-8a1a-a1a1a1a1a1a1\",\"user_metadata\":{}}"
+      },
+      {
+        "kind": "authorization_role",
+        "description": "Database role authenticated; no elevated role such as service_role is used. The rows that are attacked belong to synthetic user B (bob@example.test)."
+      },
+      {
+        "kind": "data_state",
+        "description": "Rows exist to attack: the tool seeded one row for each synthetic user."
+      }
+    ],
+    "execution": {
+      "attacker_perspective": "Anyone with your public anon key can read the rows behind public.invoice_summaries, and any signed-in user can read other users' rows through the view.",
+      "payloads": [
+        "SELECT * FROM \"public\".\"invoice_summaries\"",
+        "SELECT * FROM \"public\".\"invoice_summaries\" WHERE \"owner_id\"::text = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb'"
+      ],
+      "instructions": [
+        "Create a throwaway PostgreSQL database with the Supabase roles (anon, authenticated, service_role) and auth.uid() reading request.jwt.claims, apply the migrations as a non-superuser, and insert one row for each of two synthetic users, A (alice@example.test) and B (bob@example.test). `proof-audit rls <migrations> --out <dir>` does this and records every probe in proofs.jsonl.",
+        "In a transaction that you roll back afterwards, SET LOCAL ROLE and SET LOCAL request.jwt.claims as the anonymous caller (role anon), using the role and claims in the conditions, then run payload 1.",
+        "In a transaction that you roll back afterwards, SET LOCAL ROLE and SET LOCAL request.jwt.claims as user A (role authenticated), using the role and claims in the conditions, then run payload 2.",
+        "Replay the recorded probes with `proof-audit verify <dir>/proofs.jsonl`: it regenerates these statements from the migrations and compares the database's answers by content hash."
+      ],
+      "observed_result": "2 probe(s) were PROVEN_VULNERABLE: the database let the statement through.\npublic.invoice_summaries/view-read-anon as anon: Anonymous visitor reads the view: the statement returned 2 rows\npublic.invoice_summaries/view-read-cross as authenticated: Signed-in user A reads user B's rows through the view: the statement returned 1 row"
+    },
+    "remediation": {
+      "strategy": "Make the view run with the caller's rights (ALTER VIEW public.invoice_summaries SET (security_invoker = true), PostgreSQL 15 or later) and revoke the anon role's privileges on it. Fix verified: 2 attacks now fail and 1 legitimate action still works. The generated fix.sql section for public.invoice_summaries is attached as a starting point; review it before use.",
+      "code_changes": [
+        {
+          "file_name": "fix.sql",
+          "fixed_code": "-- public.invoice_summaries\n-- Make the view run with the caller's rights so row level security applies to it.\n-- Take every privilege away from the anon role.\nALTER VIEW \"public\".\"invoice_summaries\" SET (security_invoker = true);\nREVOKE ALL ON TABLE \"public\".\"invoice_summaries\" FROM anon;\n"
+        }
+      ]
+    },
+    "severity": {
+      "likelihood": {
+        "score": "high",
+        "reason": "The attack needs only the public anon key, which ships in every client bundle, and a single request; it was reproduced against a real database."
+      },
+      "impact": {
+        "score": "critical",
+        "reason": "Anyone holding the public anon key could read rows that belong to individual users (or the rows behind a view over them) without signing in."
+      },
+      "overall_severity": "critical"
+    },
+    "confidence": {
+      "score": "high",
+      "reason": "Reproduced against a real database (2 probe(s) PROVEN_VULNERABLE) and the before/after check passed: Fix verified: 2 attacks now fail and 1 legitimate action still works."
+    }
+  },
+  {
+    "verdict": "confirmed",
+    "fingerprint": "proof-audit/rls/public.notes/policy-always-true/Notes+20are+20viewable+20by+20everyone",
+    "title": "Policy \"Notes are viewable by everyone\" on public.notes admits every row",
+    "description": "Anyone with your public anon key can read rows of public.notes, and any signed-in user can read other users' rows. Reproduced against a throwaway PostgreSQL database: 2 of the 9 attacks run on public.notes were let through (anon-read, cross-read).",
+    "root_cause": "Policy \"Notes are viewable by everyone\" has a condition that is always true, so it admits every row for everyone (select).",
+    "intended_behavior": "A signed-in user should read and change only rows whose user_id is theirs, and the anonymous role (the public key) should have no access to rows of this table.",
+    "trace": [
+      {
+        "kind": "entrypoint",
+        "file": "examples/vulnerable-app/supabase/migrations/20260105090000_init.sql",
+        "line": 27,
+        "scope": "policy \"Notes are viewable by everyone\" on public.notes",
+        "description": "Policy \"Notes are viewable by everyone\" has a condition that is always true, so it admits every row for everyone (select)."
+      },
+      {
+        "kind": "propagation",
+        "file": "examples/vulnerable-app/supabase/migrations/20260105090000_init.sql",
+        "line": 26,
+        "scope": "table public.notes",
+        "description": "Row level security is on, so policies decide access; this policy admits the rows."
+      },
+      {
+        "kind": "sink",
+        "file": "examples/vulnerable-app/supabase/migrations/20260105090000_init.sql",
+        "line": 19,
+        "scope": "table public.notes",
+        "description": "The table that holds the rows the probes read and changed."
+      }
+    ],
+    "evidence": [
+      {
+        "file": "examples/vulnerable-app/supabase/migrations/20260105090000_init.sql",
+        "line": 27,
+        "description": "Policy \"Notes are viewable by everyone\" has a condition that is always true, so it admits every row for everyone (select)."
+      },
+      {
+        "file": "examples/vulnerable-app/supabase/migrations/20260105090000_init.sql",
+        "line": 27,
+        "description": "Probe public.notes/anon-read (recorded in proofs.jsonl, content hash sha256:3002c2a3c17629a2f67d2655a6ceebef9b96b7e8608d177426cc87253ef2a036): the statement returned 2 rows"
+      },
+      {
+        "file": "examples/vulnerable-app/supabase/migrations/20260105090000_init.sql",
+        "line": 27,
+        "description": "Probe public.notes/cross-read (recorded in proofs.jsonl, content hash sha256:0f6cc8e547ef3005eafdff5b7e68b89074713e4fe48ef4ce8fcf67f1133bb522): the statement returned 1 row"
+      }
+    ],
+    "conditions": [
+      {
+        "kind": "authentication_level",
+        "description": "No sign-in: the request carries the public anon key (database role anon). request.jwt.claims: {\"role\":\"anon\"}"
+      },
+      {
+        "kind": "authorization_role",
+        "description": "Database role anon; no elevated role such as service_role is used."
+      },
+      {
+        "kind": "authentication_level",
+        "description": "Signed in as an ordinary user (synthetic user A, alice@example.test): database role authenticated. request.jwt.claims: {\"app_metadata\":{\"org_id\":\"a1a1a1a1-a1a1-4a1a-8a1a-a1a1a1a1a1a1\",\"provider\":\"email\",\"tenant_id\":\"a1a1a1a1-a1a1-4a1a-8a1a-a1a1a1a1a1a1\"},\"aud\":\"authenticated\",\"email\":\"alice@example.test\",\"org_id\":\"a1a1a1a1-a1a1-4a1a-8a1a-a1a1a1a1a1a1\",\"role\":\"authenticated\",\"sub\":\"aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa\",\"tenant_id\":\"a1a1a1a1-a1a1-4a1a-8a1a-a1a1a1a1a1a1\",\"user_metadata\":{}}"
+      },
+      {
+        "kind": "authorization_role",
+        "description": "Database role authenticated; no elevated role such as service_role is used. The rows that are attacked belong to synthetic user B (bob@example.test)."
+      },
+      {
+        "kind": "data_state",
+        "description": "Rows exist to attack: the tool seeded one row for each synthetic user."
+      }
+    ],
+    "execution": {
+      "attacker_perspective": "Anyone with your public anon key can read rows of public.notes, and any signed-in user can read other users' rows.",
+      "payloads": [
+        "SELECT * FROM \"public\".\"notes\"",
+        "SELECT * FROM \"public\".\"notes\" WHERE \"user_id\"::text = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb'"
+      ],
+      "instructions": [
+        "Create a throwaway PostgreSQL database with the Supabase roles (anon, authenticated, service_role) and auth.uid() reading request.jwt.claims, apply the migrations as a non-superuser, and insert one row for each of two synthetic users, A (alice@example.test) and B (bob@example.test). `proof-audit rls <migrations> --out <dir>` does this and records every probe in proofs.jsonl.",
+        "In a transaction that you roll back afterwards, SET LOCAL ROLE and SET LOCAL request.jwt.claims as the anonymous caller (role anon), using the role and claims in the conditions, then run payload 1.",
+        "In a transaction that you roll back afterwards, SET LOCAL ROLE and SET LOCAL request.jwt.claims as user A (role authenticated), using the role and claims in the conditions, then run payload 2.",
+        "Replay the recorded probes with `proof-audit verify <dir>/proofs.jsonl`: it regenerates these statements from the migrations and compares the database's answers by content hash."
+      ],
+      "observed_result": "2 probe(s) were PROVEN_VULNERABLE: the database let the statement through.\npublic.notes/anon-read as anon: Anonymous visitor reads rows: the statement returned 2 rows\npublic.notes/cross-read as authenticated: Signed-in user A reads user B's rows: the statement returned 1 row"
+    },
+    "remediation": {
+      "strategy": "Drop or replace policy \"Notes are viewable by everyone\" on public.notes with a condition that ties user_id to the caller (user_id = (select auth.uid())), and revoke the anon privileges the application does not need. Fix verified: 2 attacks now fail and 4 legitimate actions still work. The generated fix.sql section for public.notes is attached as a starting point; review it before use.",
+      "code_changes": [
+        {
+          "file_name": "fix.sql",
+          "fixed_code": "-- public.notes\n-- Drop policy \"Notes are viewable by everyone\": it does not tie every command to the row's owner.\n-- Take every privilege away from the anon role (the public key).\nDROP POLICY IF EXISTS \"Notes are viewable by everyone\" ON \"public\".\"notes\";\nREVOKE ALL ON TABLE \"public\".\"notes\" FROM anon;\n"
+        }
+      ]
+    },
+    "severity": {
+      "likelihood": {
+        "score": "high",
+        "reason": "The attack needs only the public anon key, which ships in every client bundle, and a single request; it was reproduced against a real database."
+      },
+      "impact": {
+        "score": "critical",
+        "reason": "Anyone holding the public anon key could read rows that belong to individual users (or the rows behind a view over them) without signing in."
+      },
+      "overall_severity": "critical"
+    },
+    "confidence": {
+      "score": "high",
+      "reason": "Reproduced against a real database (2 probe(s) PROVEN_VULNERABLE) and the before/after check passed: Fix verified: 2 attacks now fail and 4 legitimate actions still work."
+    }
+  },
+  {
+    "verdict": "confirmed",
+    "fingerprint": "proof-audit/rls/public.profiles/rls-disabled",
+    "title": "Row level security is off on public.profiles",
+    "description": "Anyone with your public anon key can read rows of public.profiles, add rows to public.profiles, change rows in public.profiles and delete rows from public.profiles, and any signed-in user can read other users' rows, create rows in other users' names, change other users' rows and delete other users' rows. Reproduced against a throwaway PostgreSQL database: 8 of the 9 attacks run on public.profiles were let through (anon-read, anon-insert, anon-update, anon-delete, cross-read, cross-insert, cross-update, cross-delete).",
+    "root_cause": "Row level security is switched off on this table, so the database applies no row filter at all.",
+    "intended_behavior": "A signed-in user should read and change only rows whose id is theirs, and the anonymous role (the public key) should have no access to rows of this table.",
+    "trace": [
+      {
+        "kind": "entrypoint",
+        "file": "examples/vulnerable-app/supabase/migrations/20260105090000_init.sql",
+        "line": 10,
+        "scope": "table public.profiles",
+        "description": "CREATE TABLE exposes the table to the anon and authenticated roles through the Supabase default privileges, and row level security is not on for it."
+      },
+      {
+        "kind": "sink",
+        "file": "examples/vulnerable-app/supabase/migrations/20260105090000_init.sql",
+        "line": 10,
+        "scope": "table public.profiles",
+        "description": "The table that holds the rows the probes read and changed."
+      }
+    ],
+    "evidence": [
+      {
+        "file": "examples/vulnerable-app/supabase/migrations/20260105090000_init.sql",
+        "line": 10,
+        "description": "Row level security is switched off on this table, so the database applies no row filter at all."
+      },
+      {
+        "file": "examples/vulnerable-app/supabase/migrations/20260105090000_init.sql",
+        "line": 10,
+        "description": "Probe public.profiles/anon-read (recorded in proofs.jsonl, content hash sha256:1005e1751317600b6134958eb7694891a2a0088956102119ab2c34438c594c21): the statement returned 2 rows"
+      },
+      {
+        "file": "examples/vulnerable-app/supabase/migrations/20260105090000_init.sql",
+        "line": 10,
+        "description": "Probe public.profiles/anon-insert (recorded in proofs.jsonl, content hash sha256:243035d4a204935eebb10f86ee2a674eefbf3847a63c6b03f8c6c56f5ddbf139): the access policy let the row through; only a table constraint (SQLSTATE 23505) stopped the insert"
+      },
+      {
+        "file": "examples/vulnerable-app/supabase/migrations/20260105090000_init.sql",
+        "line": 10,
+        "description": "Probe public.profiles/anon-update (recorded in proofs.jsonl, content hash sha256:2b6dcdc88d456d75ad0325d303ed085b6ffb786f617a39ba84db8bf495952b57): the statement changed 2 rows"
+      },
+      {
+        "file": "examples/vulnerable-app/supabase/migrations/20260105090000_init.sql",
+        "line": 10,
+        "description": "Probe public.profiles/anon-delete (recorded in proofs.jsonl, content hash sha256:aefc1cea706c4dea0e7d0166b71f195a3be89e994a104062438daf0d72bb965b): the statement changed 2 rows"
+      },
+      {
+        "file": "examples/vulnerable-app/supabase/migrations/20260105090000_init.sql",
+        "line": 10,
+        "description": "Probe public.profiles/cross-read (recorded in proofs.jsonl, content hash sha256:7ecd238b7f33f5a700d61e8ec3d52222f16b744fb390e643d162762a5c1c6715): the statement returned 1 row"
+      },
+      {
+        "file": "examples/vulnerable-app/supabase/migrations/20260105090000_init.sql",
+        "line": 10,
+        "description": "Probe public.profiles/cross-insert (recorded in proofs.jsonl, content hash sha256:364cf1c0dcb1a41bab45106c9952c3877a87de040c491d9f7be036e8683ceb67): the access policy let the row through; only a table constraint (SQLSTATE 23505) stopped the insert"
+      },
+      {
+        "file": "examples/vulnerable-app/supabase/migrations/20260105090000_init.sql",
+        "line": 10,
+        "description": "Probe public.profiles/cross-update (recorded in proofs.jsonl, content hash sha256:95173f5b2dc4723683619ac18056fc230cda3b3a3a6f5fe6554b65352e5abe8d): the statement changed 1 row"
+      },
+      {
+        "file": "examples/vulnerable-app/supabase/migrations/20260105090000_init.sql",
+        "line": 10,
+        "description": "Probe public.profiles/cross-delete (recorded in proofs.jsonl, content hash sha256:478d2c3b142c91e0622d13ca39eece51523c40573ae7c5302694c4dc550ad6de): the statement changed 1 row"
+      }
+    ],
+    "conditions": [
+      {
+        "kind": "authentication_level",
+        "description": "No sign-in: the request carries the public anon key (database role anon). request.jwt.claims: {\"role\":\"anon\"}"
+      },
+      {
+        "kind": "authorization_role",
+        "description": "Database role anon; no elevated role such as service_role is used."
+      },
+      {
+        "kind": "authentication_level",
+        "description": "Signed in as an ordinary user (synthetic user A, alice@example.test): database role authenticated. request.jwt.claims: {\"app_metadata\":{\"org_id\":\"a1a1a1a1-a1a1-4a1a-8a1a-a1a1a1a1a1a1\",\"provider\":\"email\",\"tenant_id\":\"a1a1a1a1-a1a1-4a1a-8a1a-a1a1a1a1a1a1\"},\"aud\":\"authenticated\",\"email\":\"alice@example.test\",\"org_id\":\"a1a1a1a1-a1a1-4a1a-8a1a-a1a1a1a1a1a1\",\"role\":\"authenticated\",\"sub\":\"aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa\",\"tenant_id\":\"a1a1a1a1-a1a1-4a1a-8a1a-a1a1a1a1a1a1\",\"user_metadata\":{}}"
+      },
+      {
+        "kind": "authorization_role",
+        "description": "Database role authenticated; no elevated role such as service_role is used. The rows that are attacked belong to synthetic user B (bob@example.test)."
+      },
+      {
+        "kind": "data_state",
+        "description": "Rows exist to attack: the tool seeded one row for each synthetic user."
+      }
+    ],
+    "execution": {
+      "attacker_perspective": "Anyone with your public anon key can read rows of public.profiles, add rows to public.profiles, change rows in public.profiles and delete rows from public.profiles, and any signed-in user can read other users' rows, create rows in other users' names, change other users' rows and delete other users' rows.",
+      "payloads": [
+        "SELECT * FROM \"public\".\"profiles\"",
+        "INSERT INTO \"public\".\"profiles\" (\"id\", \"display_name\", \"avatar_url\") VALUES ('bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb', 'Bob', 'https://example.test/9b9fbf')",
+        "UPDATE \"public\".\"profiles\" SET \"display_name\" = \"display_name\"",
+        "DELETE FROM \"public\".\"profiles\"",
+        "SELECT * FROM \"public\".\"profiles\" WHERE \"id\"::text = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb'",
+        "INSERT INTO \"public\".\"profiles\" (\"id\", \"display_name\", \"avatar_url\") VALUES ('bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb', 'Bob', 'https://example.test/16ff09')",
+        "UPDATE \"public\".\"profiles\" SET \"display_name\" = \"display_name\" WHERE \"id\"::text = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb'",
+        "DELETE FROM \"public\".\"profiles\" WHERE \"id\"::text = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb'"
+      ],
+      "instructions": [
+        "Create a throwaway PostgreSQL database with the Supabase roles (anon, authenticated, service_role) and auth.uid() reading request.jwt.claims, apply the migrations as a non-superuser, and insert one row for each of two synthetic users, A (alice@example.test) and B (bob@example.test). `proof-audit rls <migrations> --out <dir>` does this and records every probe in proofs.jsonl.",
+        "In a transaction that you roll back afterwards, SET LOCAL ROLE and SET LOCAL request.jwt.claims as the anonymous caller (role anon), using the role and claims in the conditions, then run payload 1, 2, 3, 4.",
+        "In a transaction that you roll back afterwards, SET LOCAL ROLE and SET LOCAL request.jwt.claims as user A (role authenticated), using the role and claims in the conditions, then run payload 5, 6, 7, 8.",
+        "Replay the recorded probes with `proof-audit verify <dir>/proofs.jsonl`: it regenerates these statements from the migrations and compares the database's answers by content hash."
+      ],
+      "observed_result": "8 probe(s) were PROVEN_VULNERABLE: the database let the statement through.\npublic.profiles/anon-read as anon: Anonymous visitor reads rows: the statement returned 2 rows\npublic.profiles/anon-insert as anon: Anonymous visitor adds a row: the access policy let the row through; only a table constraint (SQLSTATE 23505) stopped the insert (SQLSTATE 23505: duplicate key value violates unique constraint \"profiles_pkey\")\npublic.profiles/anon-update as anon: Anonymous visitor changes rows: the statement changed 2 rows\npublic.profiles/anon-delete as anon: Anonymous visitor deletes rows: the statement changed 2 rows\npublic.profiles/cross-read as authenticated: Signed-in user A reads user B's rows: the statement returned 1 row\npublic.profiles/cross-insert as authenticated: Signed-in user A adds a row owned by user B: the access policy let the row through; only a table constraint (SQLSTATE 23505) stopped the insert (SQLSTATE 23505: duplicate key value violates unique constraint \"profiles_pkey\")\npublic.profiles/cross-update as authenticated: Signed-in user A changes user B's rows: the statement changed 1 row\npublic.profiles/cross-delete as authenticated: Signed-in user A deletes user B's rows: the statement changed 1 row"
+    },
+    "remediation": {
+      "strategy": "Turn row level security on for public.profiles and add policies that tie every command to the row's owner (id = (select auth.uid())); revoke the anon role's privileges unless the table is meant to be public. Fix verified: 8 attacks now fail and 3 legitimate actions still work. The generated fix.sql section for public.profiles is attached as a starting point; review it before use.",
+      "code_changes": [
+        {
+          "file_name": "fix.sql",
+          "fixed_code": "-- public.profiles\n-- Turn row level security on.\n-- Allow signed-in users to select, insert, update, delete only rows whose id is theirs.\n-- Take every privilege away from the anon role (the public key).\nALTER TABLE \"public\".\"profiles\" ENABLE ROW LEVEL SECURITY;\nCREATE POLICY \"profiles_select_own\" ON \"public\".\"profiles\" FOR SELECT TO authenticated USING (\"id\" = (select auth.uid()));\nCREATE POLICY \"profiles_insert_own\" ON \"public\".\"profiles\" FOR INSERT TO authenticated WITH CHECK (\"id\" = (select auth.uid()));\nCREATE POLICY \"profiles_update_own\" ON \"public\".\"profiles\" FOR UPDATE TO authenticated USING (\"id\" = (select auth.uid())) WITH CHECK (\"id\" = (select auth.uid()));\nCREATE POLICY \"profiles_delete_own\" ON \"public\".\"profiles\" FOR DELETE TO authenticated USING (\"id\" = (select auth.uid()));\nREVOKE ALL ON TABLE \"public\".\"profiles\" FROM anon;\n"
+        }
+      ]
+    },
+    "severity": {
+      "likelihood": {
+        "score": "high",
+        "reason": "The attack needs only the public anon key, which ships in every client bundle, and a single request; it was reproduced against a real database."
+      },
+      "impact": {
+        "score": "critical",
+        "reason": "Anyone holding the public anon key could add, change or delete rows of this table without signing in."
+      },
+      "overall_severity": "critical"
+    },
+    "confidence": {
+      "score": "high",
+      "reason": "Reproduced against a real database (8 probe(s) PROVEN_VULNERABLE) and the before/after check passed: Fix verified: 8 attacks now fail and 3 legitimate actions still work."
+    }
+  },
+  {
+    "verdict": "confirmed",
+    "fingerprint": "proof-audit/rls/public.projects/policy-owner-unchecked/Projects+20follow+20the+20customer",
+    "title": "Policy \"Projects follow the customer\" on public.projects does not tie written rows to their owner",
+    "description": "Any signed-in user can create rows in other users' names and give their own rows to another user in public.projects. Reproduced against a throwaway PostgreSQL database: 2 of the 9 attacks run on public.projects were let through (cross-insert, reassign-owner).",
+    "root_cause": "Policy \"Projects follow the customer\" does not check that owner_id is the caller when a row is written (insert, update).",
+    "intended_behavior": "A signed-in user should read and change only rows whose owner_id is theirs, and the anonymous role (the public key) should have no access to rows of this table.",
+    "trace": [
+      {
+        "kind": "entrypoint",
+        "file": "examples/vulnerable-app/supabase/migrations/20260105090000_init.sql",
+        "line": 77,
+        "scope": "policy \"Projects follow the customer\" on public.projects",
+        "description": "Policy \"Projects follow the customer\" does not check that owner_id is the caller when a row is written (insert, update)."
+      },
+      {
+        "kind": "propagation",
+        "file": "examples/vulnerable-app/supabase/migrations/20260105090000_init.sql",
+        "line": 76,
+        "scope": "table public.projects",
+        "description": "Row level security is on, so policies decide access; this policy admits the rows."
+      },
+      {
+        "kind": "sink",
+        "file": "examples/vulnerable-app/supabase/migrations/20260105090000_init.sql",
+        "line": 70,
+        "scope": "table public.projects",
+        "description": "The table that holds the rows the probes read and changed."
+      }
+    ],
+    "evidence": [
+      {
+        "file": "examples/vulnerable-app/supabase/migrations/20260105090000_init.sql",
+        "line": 77,
+        "description": "Policy \"Projects follow the customer\" does not check that owner_id is the caller when a row is written (insert, update)."
+      },
+      {
+        "file": "examples/vulnerable-app/supabase/migrations/20260105090000_init.sql",
+        "line": 77,
+        "description": "Probe public.projects/cross-insert (recorded in proofs.jsonl, content hash sha256:18643611b3a122577e21ae3b3f81f46a4b0eddf4fc28e6a13f01b412777bc385): the statement changed 1 row"
+      },
+      {
+        "file": "examples/vulnerable-app/supabase/migrations/20260105090000_init.sql",
+        "line": 77,
+        "description": "Probe public.projects/reassign-owner (recorded in proofs.jsonl, content hash sha256:5e1f67c651bf06a88e862562eb7145a1e4492d3b333b541cfb982bbf7c8f1b3c): the statement changed 1 row"
+      }
+    ],
+    "conditions": [
+      {
+        "kind": "authentication_level",
+        "description": "Signed in as an ordinary user (synthetic user A, alice@example.test): database role authenticated. request.jwt.claims: {\"app_metadata\":{\"org_id\":\"a1a1a1a1-a1a1-4a1a-8a1a-a1a1a1a1a1a1\",\"provider\":\"email\",\"tenant_id\":\"a1a1a1a1-a1a1-4a1a-8a1a-a1a1a1a1a1a1\"},\"aud\":\"authenticated\",\"email\":\"alice@example.test\",\"org_id\":\"a1a1a1a1-a1a1-4a1a-8a1a-a1a1a1a1a1a1\",\"role\":\"authenticated\",\"sub\":\"aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa\",\"tenant_id\":\"a1a1a1a1-a1a1-4a1a-8a1a-a1a1a1a1a1a1\",\"user_metadata\":{}}"
+      },
+      {
+        "kind": "authorization_role",
+        "description": "Database role authenticated; no elevated role such as service_role is used. The rows that are attacked belong to synthetic user B (bob@example.test)."
+      },
+      {
+        "kind": "data_state",
+        "description": "Rows exist to attack: the tool seeded one row for each synthetic user."
+      }
+    ],
+    "execution": {
+      "attacker_perspective": "Any signed-in user can create rows in other users' names and give their own rows to another user in public.projects.",
+      "payloads": [
+        "INSERT INTO \"public\".\"projects\" (\"id\", \"owner_id\", \"customer_id\", \"name\") VALUES ('52061537-e5e0-479c-9964-19942efbc6d4', 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb', 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa', 'Bob')",
+        "UPDATE \"public\".\"projects\" SET \"owner_id\" = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb' WHERE \"owner_id\"::text = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa'"
+      ],
+      "instructions": [
+        "Create a throwaway PostgreSQL database with the Supabase roles (anon, authenticated, service_role) and auth.uid() reading request.jwt.claims, apply the migrations as a non-superuser, and insert one row for each of two synthetic users, A (alice@example.test) and B (bob@example.test). `proof-audit rls <migrations> --out <dir>` does this and records every probe in proofs.jsonl.",
+        "In a transaction that you roll back afterwards, SET LOCAL ROLE and SET LOCAL request.jwt.claims as user A (role authenticated), using the role and claims in the conditions, then run payload 1, 2.",
+        "Replay the recorded probes with `proof-audit verify <dir>/proofs.jsonl`: it regenerates these statements from the migrations and compares the database's answers by content hash."
+      ],
+      "observed_result": "2 probe(s) were PROVEN_VULNERABLE: the database let the statement through.\npublic.projects/cross-insert as authenticated: Signed-in user A adds a row owned by user B: the statement changed 1 row\npublic.projects/reassign-owner as authenticated: Signed-in user A hands one of their rows to user B: the statement changed 1 row"
+    },
+    "remediation": {
+      "strategy": "Rewrite policy \"Projects follow the customer\" on public.projects so that both its USING and its WITH CHECK condition tie owner_id to the caller (owner_id = (select auth.uid())). Fix verified: 2 attacks now fail and 4 legitimate actions still work. The generated fix.sql section for public.projects is attached as a starting point; review it before use.",
+      "code_changes": [
+        {
+          "file_name": "fix.sql",
+          "fixed_code": "-- public.projects\n-- Drop policy \"Projects follow the customer\": it does not tie every command to the row's owner.\n-- Allow signed-in users to select, insert, update, delete only rows whose owner_id is theirs.\n-- Take every privilege away from the anon role (the public key).\nDROP POLICY IF EXISTS \"Projects follow the customer\" ON \"public\".\"projects\";\nCREATE POLICY \"projects_select_own\" ON \"public\".\"projects\" FOR SELECT TO authenticated USING (\"owner_id\" = (select auth.uid()));\nCREATE POLICY \"projects_insert_own\" ON \"public\".\"projects\" FOR INSERT TO authenticated WITH CHECK (\"owner_id\" = (select auth.uid()));\nCREATE POLICY \"projects_update_own\" ON \"public\".\"projects\" FOR UPDATE TO authenticated USING (\"owner_id\" = (select auth.uid())) WITH CHECK (\"owner_id\" = (select auth.uid()));\nCREATE POLICY \"projects_delete_own\" ON \"public\".\"projects\" FOR DELETE TO authenticated USING (\"owner_id\" = (select auth.uid()));\nREVOKE ALL ON TABLE \"public\".\"projects\" FROM anon;\n"
+        }
+      ]
+    },
+    "severity": {
+      "likelihood": {
+        "score": "medium",
+        "reason": "The attack needs a signed-in account; the tool did not check whether anyone can sign up. It was reproduced against a real database with an ordinary user."
+      },
+      "impact": {
+        "score": "high",
+        "reason": "A signed-in user could read or change rows that belong to another user, or give a row away."
+      },
+      "overall_severity": "high"
+    },
+    "confidence": {
+      "score": "high",
+      "reason": "Reproduced against a real database (2 probe(s) PROVEN_VULNERABLE) and the before/after check passed: Fix verified: 2 attacks now fail and 4 legitimate actions still work."
+    }
+  },
+  {
+    "verdict": "confirmed",
+    "fingerprint": "proof-audit/rls/public.tickets/policy-always-true/Anyone+20can+20use+20tickets",
+    "title": "Policy \"Anyone can use tickets\" on public.tickets admits every row",
+    "description": "Anyone with your public anon key can read rows of public.tickets, add rows to public.tickets, change rows in public.tickets and delete rows from public.tickets, and any signed-in user can read other users' rows, create rows in other users' names, create rows that belong to nobody, change other users' rows, delete other users' rows and give their own rows to another user. Reproduced against a throwaway PostgreSQL database: 10 of the 10 attacks run on public.tickets were let through (anon-read, anon-insert, anon-update, anon-delete, cross-read, cross-insert, null-owner-insert, cross-update, cross-delete, reassign-owner).",
+    "root_cause": "Policy \"Anyone can use tickets\" lets everyone write (all) with a condition that is always true.",
+    "intended_behavior": "A signed-in user should read and change only rows whose user_id is theirs, and the anonymous role (the public key) should have no access to rows of this table.",
+    "trace": [
+      {
+        "kind": "entrypoint",
+        "file": "examples/vulnerable-app/supabase/migrations/20260105090000_init.sql",
+        "line": 44,
+        "scope": "policy \"Anyone can use tickets\" on public.tickets",
+        "description": "Policy \"Anyone can use tickets\" lets everyone write (all) with a condition that is always true."
+      },
+      {
+        "kind": "propagation",
+        "file": "examples/vulnerable-app/supabase/migrations/20260105090000_init.sql",
+        "line": 43,
+        "scope": "table public.tickets",
+        "description": "Row level security is on, so policies decide access; this policy admits the rows."
+      },
+      {
+        "kind": "sink",
+        "file": "examples/vulnerable-app/supabase/migrations/20260105090000_init.sql",
+        "line": 36,
+        "scope": "table public.tickets",
+        "description": "The table that holds the rows the probes read and changed."
+      }
+    ],
+    "evidence": [
+      {
+        "file": "examples/vulnerable-app/supabase/migrations/20260105090000_init.sql",
+        "line": 44,
+        "description": "Policy \"Anyone can use tickets\" lets everyone write (all) with a condition that is always true."
+      },
+      {
+        "file": "examples/vulnerable-app/supabase/migrations/20260105090000_init.sql",
+        "line": 44,
+        "description": "Probe public.tickets/anon-read (recorded in proofs.jsonl, content hash sha256:90562acfca476a4d97a6fccb4a61cc5a3f300d37e8b479b3d97011d2447e4b91): the statement returned 2 rows"
+      },
+      {
+        "file": "examples/vulnerable-app/supabase/migrations/20260105090000_init.sql",
+        "line": 44,
+        "description": "Probe public.tickets/anon-insert (recorded in proofs.jsonl, content hash sha256:55ca3553570a955f4183f68cef4dd7874a256d7529bd16df77af1146ca04e640): the statement changed 1 row"
+      },
+      {
+        "file": "examples/vulnerable-app/supabase/migrations/20260105090000_init.sql",
+        "line": 44,
+        "description": "Probe public.tickets/anon-update (recorded in proofs.jsonl, content hash sha256:03e56b5db03a21025ef25ae3c3356f421afbc478a1479e666ef580ca20428c64): the statement changed 2 rows"
+      },
+      {
+        "file": "examples/vulnerable-app/supabase/migrations/20260105090000_init.sql",
+        "line": 44,
+        "description": "Probe public.tickets/anon-delete (recorded in proofs.jsonl, content hash sha256:abeac5841442a1ec44d5fc3c1c81fb2dbd2d86d98a43aa304ba8f3eac47f3ef6): the statement changed 2 rows"
+      },
+      {
+        "file": "examples/vulnerable-app/supabase/migrations/20260105090000_init.sql",
+        "line": 44,
+        "description": "Probe public.tickets/cross-read (recorded in proofs.jsonl, content hash sha256:58752f7fc91f0091be6e0489084b18566c67806cf22c0ca20660436d229562ec): the statement returned 1 row"
+      },
+      {
+        "file": "examples/vulnerable-app/supabase/migrations/20260105090000_init.sql",
+        "line": 44,
+        "description": "Probe public.tickets/cross-insert (recorded in proofs.jsonl, content hash sha256:3f9e937a71e1c3691c0b278174596d6f9fa5d01ec18a0e7facd21e4e5c572acf): the statement changed 1 row"
+      },
+      {
+        "file": "examples/vulnerable-app/supabase/migrations/20260105090000_init.sql",
+        "line": 44,
+        "description": "Probe public.tickets/null-owner-insert (recorded in proofs.jsonl, content hash sha256:be6c381bab9dda9fbd17f11f8875b6c98aa8832f872e006ceb2143938bf100d7): the statement changed 1 row"
+      },
+      {
+        "file": "examples/vulnerable-app/supabase/migrations/20260105090000_init.sql",
+        "line": 44,
+        "description": "Probe public.tickets/cross-update (recorded in proofs.jsonl, content hash sha256:91079424847d196b0befbf1f45d6c2059c293e2639a171e86508f2a59a1e8c86): the statement changed 1 row"
+      },
+      {
+        "file": "examples/vulnerable-app/supabase/migrations/20260105090000_init.sql",
+        "line": 44,
+        "description": "Probe public.tickets/cross-delete (recorded in proofs.jsonl, content hash sha256:83f93acf454ebf593d09e5cbd1f035379614fb57722509c666cc6e6cb8637f02): the statement changed 1 row"
+      },
+      {
+        "file": "examples/vulnerable-app/supabase/migrations/20260105090000_init.sql",
+        "line": 44,
+        "description": "Probe public.tickets/reassign-owner (recorded in proofs.jsonl, content hash sha256:b8aac0e872d120d2afd1006ebeb3f12d774c395d674401362d96d464674d1019): the statement changed 1 row"
+      }
+    ],
+    "conditions": [
+      {
+        "kind": "authentication_level",
+        "description": "No sign-in: the request carries the public anon key (database role anon). request.jwt.claims: {\"role\":\"anon\"}"
+      },
+      {
+        "kind": "authorization_role",
+        "description": "Database role anon; no elevated role such as service_role is used."
+      },
+      {
+        "kind": "authentication_level",
+        "description": "Signed in as an ordinary user (synthetic user A, alice@example.test): database role authenticated. request.jwt.claims: {\"app_metadata\":{\"org_id\":\"a1a1a1a1-a1a1-4a1a-8a1a-a1a1a1a1a1a1\",\"provider\":\"email\",\"tenant_id\":\"a1a1a1a1-a1a1-4a1a-8a1a-a1a1a1a1a1a1\"},\"aud\":\"authenticated\",\"email\":\"alice@example.test\",\"org_id\":\"a1a1a1a1-a1a1-4a1a-8a1a-a1a1a1a1a1a1\",\"role\":\"authenticated\",\"sub\":\"aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa\",\"tenant_id\":\"a1a1a1a1-a1a1-4a1a-8a1a-a1a1a1a1a1a1\",\"user_metadata\":{}}"
+      },
+      {
+        "kind": "authorization_role",
+        "description": "Database role authenticated; no elevated role such as service_role is used. The rows that are attacked belong to synthetic user B (bob@example.test)."
+      },
+      {
+        "kind": "data_state",
+        "description": "Rows exist to attack: the tool seeded one row for each synthetic user."
+      }
+    ],
+    "execution": {
+      "attacker_perspective": "Anyone with your public anon key can read rows of public.tickets, add rows to public.tickets, change rows in public.tickets and delete rows from public.tickets, and any signed-in user can read other users' rows, create rows in other users' names, create rows that belong to nobody, change other users' rows, delete other users' rows and give their own rows to another user.",
+      "payloads": [
+        "SELECT * FROM \"public\".\"tickets\"",
+        "INSERT INTO \"public\".\"tickets\" (\"id\", \"user_id\", \"subject\") VALUES ('36384538-dd35-4a35-a38e-c8a664532d19', 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb', 'Synthetic subject (Bob)')",
+        "UPDATE \"public\".\"tickets\" SET \"subject\" = \"subject\"",
+        "DELETE FROM \"public\".\"tickets\"",
+        "SELECT * FROM \"public\".\"tickets\" WHERE \"user_id\"::text = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb'",
+        "INSERT INTO \"public\".\"tickets\" (\"id\", \"user_id\", \"subject\") VALUES ('ac193d51-5819-4ef0-951d-9e45259b89c3', 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb', 'Synthetic subject (Bob)')",
+        "INSERT INTO \"public\".\"tickets\" (\"id\", \"user_id\", \"subject\") VALUES ('e781bca1-85b3-4e1a-95b4-dd9eebe43807', NULL, 'Synthetic subject (Bob)')",
+        "UPDATE \"public\".\"tickets\" SET \"subject\" = \"subject\" WHERE \"user_id\"::text = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb'",
+        "DELETE FROM \"public\".\"tickets\" WHERE \"user_id\"::text = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb'",
+        "UPDATE \"public\".\"tickets\" SET \"user_id\" = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb' WHERE \"user_id\"::text = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa'"
+      ],
+      "instructions": [
+        "Create a throwaway PostgreSQL database with the Supabase roles (anon, authenticated, service_role) and auth.uid() reading request.jwt.claims, apply the migrations as a non-superuser, and insert one row for each of two synthetic users, A (alice@example.test) and B (bob@example.test). `proof-audit rls <migrations> --out <dir>` does this and records every probe in proofs.jsonl.",
+        "In a transaction that you roll back afterwards, SET LOCAL ROLE and SET LOCAL request.jwt.claims as the anonymous caller (role anon), using the role and claims in the conditions, then run payload 1, 2, 3, 4.",
+        "In a transaction that you roll back afterwards, SET LOCAL ROLE and SET LOCAL request.jwt.claims as user A (role authenticated), using the role and claims in the conditions, then run payload 5, 6, 7, 8, 9, 10.",
+        "Replay the recorded probes with `proof-audit verify <dir>/proofs.jsonl`: it regenerates these statements from the migrations and compares the database's answers by content hash."
+      ],
+      "observed_result": "10 probe(s) were PROVEN_VULNERABLE: the database let the statement through.\npublic.tickets/anon-read as anon: Anonymous visitor reads rows: the statement returned 2 rows\npublic.tickets/anon-insert as anon: Anonymous visitor adds a row: the statement changed 1 row\npublic.tickets/anon-update as anon: Anonymous visitor changes rows: the statement changed 2 rows\npublic.tickets/anon-delete as anon: Anonymous visitor deletes rows: the statement changed 2 rows\npublic.tickets/cross-read as authenticated: Signed-in user A reads user B's rows: the statement returned 1 row\npublic.tickets/cross-insert as authenticated: Signed-in user A adds a row owned by user B: the statement changed 1 row\npublic.tickets/null-owner-insert as authenticated: Signed-in user A adds a row with no owner: the statement changed 1 row\npublic.tickets/cross-update as authenticated: Signed-in user A changes user B's rows: the statement changed 1 row\npublic.tickets/cross-delete as authenticated: Signed-in user A deletes user B's rows: the statement changed 1 row\npublic.tickets/reassign-owner as authenticated: Signed-in user A hands one of their rows to user B: the statement changed 1 row"
+    },
+    "remediation": {
+      "strategy": "Drop or replace policy \"Anyone can use tickets\" on public.tickets with a condition that ties user_id to the caller (user_id = (select auth.uid())), and revoke the anon privileges the application does not need. Fix verified: 10 attacks now fail and 4 legitimate actions still work. The generated fix.sql section for public.tickets is attached as a starting point; review it before use.",
+      "code_changes": [
+        {
+          "file_name": "fix.sql",
+          "fixed_code": "-- public.tickets\n-- Drop policy \"Anyone can use tickets\": it does not tie every command to the row's owner.\n-- Allow signed-in users to select, insert, update, delete only rows whose user_id is theirs.\n-- Take every privilege away from the anon role (the public key).\nDROP POLICY IF EXISTS \"Anyone can use tickets\" ON \"public\".\"tickets\";\nCREATE POLICY \"tickets_select_own\" ON \"public\".\"tickets\" FOR SELECT TO authenticated USING (\"user_id\" = (select auth.uid()));\nCREATE POLICY \"tickets_insert_own\" ON \"public\".\"tickets\" FOR INSERT TO authenticated WITH CHECK (\"user_id\" = (select auth.uid()));\nCREATE POLICY \"tickets_update_own\" ON \"public\".\"tickets\" FOR UPDATE TO authenticated USING (\"user_id\" = (select auth.uid())) WITH CHECK (\"user_id\" = (select auth.uid()));\nCREATE POLICY \"tickets_delete_own\" ON \"public\".\"tickets\" FOR DELETE TO authenticated USING (\"user_id\" = (select auth.uid()));\nREVOKE ALL ON TABLE \"public\".\"tickets\" FROM anon;\n"
+        }
+      ]
+    },
+    "severity": {
+      "likelihood": {
+        "score": "high",
+        "reason": "The attack needs only the public anon key, which ships in every client bundle, and a single request; it was reproduced against a real database."
+      },
+      "impact": {
+        "score": "critical",
+        "reason": "Anyone holding the public anon key could add, change or delete rows of this table without signing in."
+      },
+      "overall_severity": "critical"
+    },
+    "confidence": {
+      "score": "high",
+      "reason": "Reproduced against a real database (10 probe(s) PROVEN_VULNERABLE) and the before/after check passed: Fix verified: 10 attacks now fail and 4 legitimate actions still work."
+    }
+  },
+  {
+    "verdict": "rejected",
+    "fingerprint": "saas-audit/supabase-policy-permissive:supabase/migrations/20260105090000_init.sql:public.documents:Owners+20can+20edit+20documents",
+    "title": "Policy \"Owners can edit documents\" lets authenticated update every row of documents",
+    "description": "WITH CHECK (true) is always true, so row level security does not restrict updates on documents for authenticated.",
+    "claimed_root_cause": "The static auditor (saas-audit 0.1.0, rule supabase-policy-permissive) claimed: Policy \"Owners can edit documents\" lets authenticated update every row of documents. WITH CHECK (true) is always true, so row level security does not restrict updates on documents for authenticated.",
+    "trace": [
+      {
+        "kind": "entrypoint",
+        "file": "examples/vulnerable-app/supabase/migrations/20260105090000_init.sql",
+        "line": 62,
+        "scope": "policy \"Owners can edit documents\" on public.documents",
+        "description": "The statement the static auditor flagged (supabase-policy-permissive)."
+      },
+      {
+        "kind": "sink",
+        "file": "examples/vulnerable-app/supabase/migrations/20260105090000_init.sql",
+        "line": 51,
+        "scope": "table public.documents",
+        "description": "The table that holds the rows the probes read and changed."
+      }
+    ],
+    "evidence": [
+      {
+        "file": "examples/vulnerable-app/supabase/migrations/20260105090000_init.sql",
+        "line": 62,
+        "description": "The statement behind the static finding supabase-policy-permissive (high) reported at supabase/migrations/20260105090000_init.sql:62."
+      },
+      {
+        "file": "examples/vulnerable-app/supabase/migrations/20260105090000_init.sql",
+        "line": 62,
+        "description": "Probe public.documents/cross-update (recorded in proofs.jsonl, content hash sha256:e76378c46b7aa52fbc41dca0bb87da2164946233c15720b47d98e8abd1a9094a): the statement changed 0 rows although 1 row existed to change"
+      },
+      {
+        "file": "examples/vulnerable-app/supabase/migrations/20260105090000_init.sql",
+        "line": 62,
+        "description": "Probe public.documents/reassign-owner (recorded in proofs.jsonl, content hash sha256:92f2b11bdb179b7badba35d60ee55bd7399134b8f004f07d8af0ce473e685f97): the database refused the statement (permission denied or a row-level security rule)"
+      }
+    ],
+    "reason": "The database denied every attack this finding describes (cross-update, reassign-owner); likely a false positive or covered by grants/roles; other attacks on this table were proven: cross-insert. A refusal for two synthetic users and an anonymous caller refutes the attacks that were run; it does not show that the table is safe."
+  }
+]

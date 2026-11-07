@@ -587,4 +587,4 @@ This report is evidence about the SQL that was supplied, for the synthetic users
 
 ## Evidence files
 
-Written next to this report by the same run (`out/sample-report/audit/`, not committed): `report.json`, `proofs.jsonl` (every probe with its exact SQL, role, claims, answer and content hash), `verification-contract.json` and `fix.sql`. The committed copies for the same example, produced by the same tool, are in `examples/vulnerable-app/sample-output/`.
+Written next to this report by the same run (`out/sample-report/audit/`, not committed): `report.json`, `proofs.jsonl` (every probe with its exact SQL, role, claims, answer and content hash), `verification-contract.json`, `fix.sql` and `findings.json` (the same results as records of the findings.json format, derived from the run and not read back by `verify`). The committed copies for the same example, produced by the same tool, are in `examples/vulnerable-app/sample-output/`.

@@ -74,7 +74,7 @@ node dist/bin.js rls supabase/migrations --out out/audit
 proof-audit rls <migrations-dir | file.sql...> [options]
   --json | --markdown       print JSON or Markdown instead of the plain-language report
   --out <dir>               also write report.md, report.json, proofs.jsonl,
-                            verification-contract.json and fix.sql into <dir>
+                            verification-contract.json, fix.sql and findings.json into <dir>
   --from-audit <file>       report of the saas-audit static auditor (see below)
   --no-fix                  do not propose or verify a fix
   --fail-on <proven|none>   exit 1 when something was proven (default) or never
@@ -733,6 +733,21 @@ The proofs in the report still carry what the database answered (the table is op
 
 `proof-audit verify <proofs.jsonl>` exits 0 only if every recorded expectation holds: the recorded inputs are unchanged (otherwise exit 3, "stale"), the database gives the same answer to every recorded probe (compared by content hash), and the recorded fix still closes the recorded holes. The file is not trusted to carry SQL: the hashes are unkeyed, so `verify` regenerates the probes and the fix from the migrations with its own planner, refuses (exit 2) any file whose SQL, claims or fix differ, and never executes what the file says. With `--against <migrations>` it re-runs the recorded probes against other migrations and exits 0 only when every previously proven table is now verified. The decoder re-computes every hash, and the contract decoder rejects any command that is not a plain `proof-audit verify ...` invocation.
 
+## Export in the findings.json format
+
+With `--out <dir>` the run also writes `findings.json`: the same results as an array of records in the `findings.json` shape that Cloudflare publishes for its open source [security-audit-skill](https://github.com/cloudflare/security-audit-skill) (MIT), so tools that read that shape can read them. This project is not affiliated with Cloudflare; the record types, the fingerprints and the conformance check are original code written from the published description of the format, and the tests need no network. [docs/findings-json.md](docs/findings-json.md) has every field, the severity anchors and the fingerprint scheme; [ADR 0012](docs/adr/0012-findings-json-export.md) has the reasoning. A real example is [examples/vulnerable-app/sample-output/findings.json](examples/vulnerable-app/sample-output/findings.json).
+
+| Result | Record |
+| --- | --- |
+| PROVEN (a real query on a real database let the attack through; SQL, claims, row count or error and hash recorded) | `confirmed`, one per table and root cause, not one per probe |
+| SUSPECTED or INCONCLUSIVE (no probe could confirm it) | `needs_validation` with `blockers` that say why, and a local validation plan; no severity |
+| a static finding given with `--from-audit` that the database refused | `rejected`, with the recorded refusal as the reason |
+| CLEAN, or a static finding that was proven or could not be tested | no record |
+
+A static finding is never `confirmed` by this export, and `confirmed` is never produced without a probe that the database let through. Severity of a `confirmed` record comes from a fixed anchor table (anonymous write or read of per-user rows: critical; a signed-in user reaching another user's rows: high; an anonymous read of a table with no owner column: medium), the same rule `report.json` uses; confidence is `high` only when the before/after check passed for the table. Every record points at real lines of your migrations (the policy, the `ALTER TABLE ... ROW LEVEL SECURITY`, the `CREATE TABLE`); an object whose declaration cannot be found gets no record and the run says so.
+
+`findings.json` is **derived output**: `proof-audit verify` never reads it and the hashes of `proofs.jsonl` do not cover it (its records cite the probes they rest on by id and content hash, so they can be checked against `proofs.jsonl`). It is written only if it conforms to the format, so it is skipped, with a message, when an input path is not a safe repository-relative path (run from the project root). Like `report.json`, it keeps text from your migrations as found, so a program that renders it must sanitise it.
+
 ## How it works
 
 1. **Read** the migrations with a purpose-built tolerant SQL reader (comments, dollar quotes, quoted identifiers, `BEGIN ATOMIC`, psql meta-commands). Unsupported statements are skipped with a warning and never abort a run.
@@ -749,25 +764,25 @@ The design records are in [docs/adr](docs/adr) and the vocabulary and context ma
 
 | Suite | Where | Cases | Needs |
 | --- | --- | --- | --- |
-| domain unit and property tests | `test/domain` | 1,089 | nothing |
-| application tests with an in-memory fake database | `test/application` | 136 | nothing |
+| domain unit and property tests | `test/domain` | 1,187 | nothing |
+| application tests with an in-memory fake database, including the findings.json export | `test/application` | 164 | nothing |
 | adapter tests (fake docker, fake transport, statement builders, files, args, cleanup) and contract suite | `test/infrastructure`, `test/contract` | 126 | nothing |
-| architecture (dependency rule) | `test/architecture` | 76 | nothing |
-| command line end to end, in-memory | `test/e2e` | 34 | nothing |
-| **offline total** | `npm test` | **1,461** | |
-| real PostgreSQL 16.14: analysis (23), sandbox (16), CLI (12), **hostile migrations (43)** | `test/integration` | 94 | `scripts/integration.sh` |
+| architecture (dependency rule) | `test/architecture` | 84 | nothing |
+| command line end to end, in-memory | `test/e2e` | 40 | nothing |
+| **offline total** | `npm test` | **1,601** | |
+| real PostgreSQL 16.14: analysis (23), sandbox (16), CLI (14), **hostile migrations (43)** | `test/integration` | 96 | `scripts/integration.sh` |
 | default container mode for real, including hostile migrations | `test/smoke` | 3 | `scripts/docker-smoke.sh` |
 
 (Parameterised tests count once per row.) Offline coverage:
 
 | Layer | Statements | Lines | Branches |
 | --- | --- | --- | --- |
-| `src/domain` | 95.33% | 97.47% | 89.05% |
-| `src/application` | 96.20% | 97.50% | 83.59% |
-| `src/infrastructure` | 87.50% | 88.42% | 86.31% |
-| **overall** | **94.05%** | **95.80%** | **88.08%** |
+| `src/domain` | 95.74% | 97.71% | 89.67% |
+| `src/application` | 96.92% | 98.20% | 84.65% |
+| `src/infrastructure` | 87.79% | 88.51% | 86.31% |
+| **overall** | **94.61%** | **96.24%** | **88.78%** |
 
-The infrastructure layer is lower offline because the `pg` transport and the URL provider only run against a real server. The integration suite, measured on its own, covers 73.0% of lines overall (`pg-transport.ts` 92%, `sandbox.ts` 92%, `statements.ts` 100%, `catalog-sql.ts` 100%). Integration coverage is reported separately: `scripts/integration.sh --coverage`.
+The infrastructure layer is lower offline because the `pg` transport and the URL provider only run against a real server. The integration suite, measured on its own, covers 75.4% of lines overall (`pg-transport.ts` 92%, `sandbox.ts` 92%, `statements.ts` 100%, `catalog-sql.ts` 100%). Integration coverage is reported separately: `scripts/integration.sh --coverage`. The findings.json export (`src/domain/interchange`) is covered offline at 98.3% of statements and 99.3% of lines: conformance of the output to the format, the severity anchor table, fingerprint stability when lines move, root-cause attribution, and the rule that no record has a position that is not a statement of the migration; the integration suite checks the file written for the vulnerable example against a real database.
 
 The hostile-migration tests (`test/integration/hostile.integration.test.ts`) build each attack at run time: a replaced probe function, shadowed built-ins and a repointed `search_path`, direct catalog writes, a redefined `auth.uid()`, event triggers, `ALTER SYSTEM`, `COPY ... PROGRAM`, server-side files, untrusted extensions, a table hidden through `ALTER EXTENSION`, rules and triggers that change probe results, a trigger that tries to forge the reply, and platform tampering done by a real superuser mid-run. Each was first reproduced as a false CLEAN, a hidden table or a privileged statement that ran, and now produces the observed verdict, a refusal, or an INTEGRITY_VIOLATION.
 

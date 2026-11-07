@@ -26,6 +26,8 @@ proof-audit has one job: turn the suspicion "this table's row level security mig
 | **Verification** | The same probes re-run on a fresh copy of the sandbox with the fix applied. A fix is `VERIFIED` only if every previously proven probe is now refused **and** every legitimate probe that worked before still works. |
 | **Evidence file** | `proofs.jsonl`: one metadata line, then one line per proof. `proof-audit verify` regenerates the probes and the fix and replays them; the file's SQL is never executed. |
 | **Verification contract** | `verification-contract.json`: checks of the form `{command, expectedExitCode}` that an orchestrator can run to require evidence before a task counts as done. |
+| **Findings export** | `findings.json`: the results of a run as records in the findings.json shape that Cloudflare publishes for its security-audit-skill (`confirmed`, `needs_validation`, `rejected`), one per table and root cause. Derived output: `verify` never reads it. See [findings-json.md](findings-json.md). |
+| **Root cause** | The first static cause that explains a proven probe (row level security off, an always-true policy, a policy that does not tie the owner, no owner comparison, a view that bypasses row level security, else unattributed). One findings record per table and root cause. |
 
 ## Context map
 
