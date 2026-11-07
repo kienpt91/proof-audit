@@ -20,5 +20,7 @@ Other tools read audit results in the `findings.json` shape that Cloudflare publ
 ## Consequences
 
 - Input paths must be safe repository-relative paths for the file to be written; otherwise it is skipped with a message (run from the project root).
+- When the file is not written, an earlier `findings.json` in the same `--out` is removed and stderr says so.
+- A run with an `INTEGRITY_VIOLATION` exports no `rejected` record.
 - The export inherits the limits of the tool: row level security only, two synthetic users and an anonymous caller. `rejected` means "the attacks that were run were refused".
 - The format's limits (1000 records, 5 MiB) are enforced by not writing a file that exceeds them.

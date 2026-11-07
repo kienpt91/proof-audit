@@ -431,7 +431,7 @@
     },
     "confidence": {
       "score": "high",
-      "reason": "Reproduced against a real database (8 probe(s) PROVEN_VULNERABLE) and the before/after check passed: Fix verified: 8 attacks now fail and 3 legitimate actions still work."
+      "reason": "Reproduced against a real database (8 probe(s) PROVEN_VULNERABLE) and the before/after check passed: Fix verified: 8 attacks now fail and 3 legitimate actions still work. 1 other probe(s) on public.profiles gave no clear answer (public.profiles/reassign-owner); they have no record of their own, see proofs.jsonl."
     }
   },
   {
@@ -691,7 +691,7 @@
   },
   {
     "verdict": "rejected",
-    "fingerprint": "saas-audit/supabase-policy-permissive:supabase/migrations/20260105090000_init.sql:public.documents:Owners+20can+20edit+20documents",
+    "fingerprint": "saas-audit/supabase-policy-permissive:supabase/migrations/20260105090000_init.sql:Policy+20+22Owners+20can+20edit+20documents+22+20lets+20authenticated+20update+20every+20row+20of+20documents",
     "title": "Policy \"Owners can edit documents\" lets authenticated update every row of documents",
     "description": "WITH CHECK (true) is always true, so row level security does not restrict updates on documents for authenticated.",
     "claimed_root_cause": "The static auditor (saas-audit 0.1.0, rule supabase-policy-permissive) claimed: Policy \"Owners can edit documents\" lets authenticated update every row of documents. WITH CHECK (true) is always true, so row level security does not restrict updates on documents for authenticated.",

@@ -34,7 +34,11 @@ const FIELDS: Readonly<Record<string, readonly string[]>> = {
 
 const VISIBLE = /[^\p{White_Space}\p{Cc}\p{Cf}\p{Default_Ignorable_Code_Point}]/u;
 const PATH_BAD_CHAR = /[\p{Cc}\p{Cf}\p{Zl}\p{Zp}\p{Default_Ignorable_Code_Point}]/u;
-const WINDOWS_DEVICE = /^(?:con|prn|aux|nul|clock\$|conin\$|conout\$|com[1-9]|lpt[1-9])(?:\.|$)/i;
+// With the `u` flag so that case folding follows Unicode (the Kelvin sign folds to `k`), and the superscript digits count as digits.
+const WINDOWS_DEVICE = /^(?:con|prn|aux|nul|clock\$|conin\$|conout\$|com[1-9\u00b9\u00b2\u00b3]|lpt[1-9\u00b9\u00b2\u00b3])(?:\.|$)/iu;
+/** Bytes of the canonical text of one item of a list that must be unique, and of all such texts of one list. */
+export const MAX_KEY_BYTES = 1024 * 1024;
+export const MAX_SET_BYTES = 5 * 1024 * 1024;
 
 type Obj = Record<string, unknown>;
 
@@ -56,11 +60,57 @@ export function isSafeRelativePath(p: string): boolean {
   return p.split("/").every((part) => part !== "" && part !== "." && part !== ".." && !/[ .]$/.test(part) && !WINDOWS_DEVICE.test(part));
 }
 
-/** Key-order independent text of a value, to find duplicates in lists that must be unique. */
-function identity(v: unknown): string {
-  if (Array.isArray(v)) return `[${v.map(identity).join(",")}]`;
-  if (isObj(v)) return `{${Object.keys(v).sort().map((k) => `${JSON.stringify(k)}:${identity(v[k])}`).join(",")}}`;
-  return JSON.stringify(v);
+/** UTF-8 length of a string; a lone surrogate counts as the three bytes of U+FFFD, as the encoder writes it. */
+function utf8Length(text: string): number {
+  let n = 0;
+  for (let i = 0; i < text.length; i++) {
+    const c = text.charCodeAt(i);
+    if (c < 0x80) n += 1;
+    else if (c < 0x800) n += 2;
+    else if (c >= 0xd800 && c <= 0xdbff && i + 1 < text.length && text.charCodeAt(i + 1) >= 0xdc00 && text.charCodeAt(i + 1) <= 0xdfff) {
+      n += 4;
+      i++;
+    } else n += 3;
+  }
+  return n;
+}
+
+class KeyTooLarge extends Error {}
+
+/** Key-order independent text of a value, to find duplicates in lists that must be unique; fails past `MAX_KEY_BYTES`. */
+function canonicalKey(value: unknown): { readonly key: string; readonly bytes: number } {
+  const chunks: string[] = [];
+  let bytes = 0;
+  const append = (chunk: string): void => {
+    bytes += utf8Length(chunk);
+    if (bytes > MAX_KEY_BYTES) throw new KeyTooLarge(`canonical key exceeds ${MAX_KEY_BYTES} byte limit`);
+    chunks.push(chunk);
+  };
+  const encode = (v: unknown): void => {
+    if (v === null) append("null");
+    else if (typeof v === "string") append(`string:${JSON.stringify(v)}`);
+    else if (typeof v === "number") append(`number:${Object.is(v, -0) ? "0" : String(v)}`);
+    else if (typeof v === "boolean") append(`boolean:${v ? "true" : "false"}`);
+    else if (Array.isArray(v)) {
+      append("array:[");
+      v.forEach((entry, i) => {
+        if (i > 0) append(",");
+        encode(entry);
+      });
+      append("]");
+    } else if (isObj(v)) {
+      append("object:{");
+      Object.keys(v).sort().forEach((k, i) => {
+        if (i > 0) append(",");
+        append(JSON.stringify(k));
+        append(":");
+        encode(v[k]);
+      });
+      append("}");
+    } else append(`${typeof v}:${String(v)}`);
+  };
+  encode(value);
+  return { key: chunks.join(""), bytes };
 }
 
 class Errors {
@@ -109,11 +159,26 @@ function list(e: Errors, path: string, v: unknown, min: number): readonly unknow
 
 function unique(e: Errors, path: string, items: readonly unknown[]): void {
   const seen = new Set<string>();
-  items.forEach((item, i) => {
-    const key = identity(item);
-    if (seen.has(key)) e.add(`${path}[${i}]`, "duplicate of an earlier item");
-    seen.add(key);
-  });
+  let total = 0;
+  for (let i = 0; i < items.length; i++) {
+    let canonical: { readonly key: string; readonly bytes: number };
+    try {
+      canonical = canonicalKey(items[i]);
+    } catch (error) {
+      e.add(`${path}[${i}]`, error instanceof KeyTooLarge ? error.message : "cannot be compared for uniqueness");
+      return;
+    }
+    if (seen.has(canonical.key)) {
+      e.add(`${path}[${i}]`, "duplicate of an earlier item");
+      continue;
+    }
+    total += canonical.bytes;
+    if (total > MAX_SET_BYTES) {
+      e.add(path, `canonical uniqueness set exceeds ${MAX_SET_BYTES} byte limit`);
+      return;
+    }
+    seen.add(canonical.key);
+  }
 }
 
 function position(e: Errors, path: string, o: Obj): void {

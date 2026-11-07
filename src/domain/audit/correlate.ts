@@ -10,6 +10,8 @@ export interface CorrelationInput {
   readonly proofs: readonly Proof[];
   /** Qualified names of every table and view that was analysed. */
   readonly subjects: readonly string[];
+  /** True when the run's integrity is in doubt (the migrations touched the test environment): no probe result may then refute a static finding. */
+  readonly untrusted?: boolean;
 }
 
 interface Outcome {
@@ -168,6 +170,7 @@ interface Tables {
   /** Exploit probes of the `before` phase, in the order given. */
   readonly exploits: ReadonlyMap<string, readonly Proof[]>;
   readonly proofs: readonly Proof[];
+  readonly untrusted: boolean;
 }
 
 function outcomeFor(f: ParsedAuditFinding, tables: Tables): Outcome {
@@ -177,6 +180,9 @@ function outcomeFor(f: ParsedAuditFinding, tables: Tables): Outcome {
   }
   if (!tables.analysed.has(table)) {
     return { proofStatus: "STATIC_ONLY", proofIds: [], note: "table not found in the analysed migrations" };
+  }
+  if (tables.untrusted) {
+    return { proofStatus: "INCONCLUSIVE", proofIds: [], note: "could not be proven either way: the migrations touched the test environment the results depend on, so no probe result of this run can be trusted" };
   }
   const relevance = relevantProbes(f.rule, f.title);
   const tableProofs = tables.exploits.get(table) ?? [];
@@ -210,7 +216,7 @@ export function correlateAudit(audit: ParsedAudit, results: CorrelationInput): A
     list.push(proof);
     exploits.set(proof.subject, list);
   }
-  const tables: Tables = { analysed: new Set(results.subjects), finding, exploits, proofs: before };
+  const tables: Tables = { analysed: new Set(results.subjects), finding, exploits, proofs: before, untrusted: results.untrusted === true };
 
   const inScope: ParsedAuditFinding[] = audit.findings.filter((f) => isRlsRule(f.rule));
   const correlated: CorrelatedAuditFinding[] = inScope.map((f) => ({

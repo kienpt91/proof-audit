@@ -131,7 +131,7 @@ export async function analyzeRls(request: AnalyzeRequest, deps: AnalyzeDeps): Pr
       seeding,
       fix,
       verification,
-      audit: request.audit ? correlateAudit(request.audit, { findings, proofs: before.proofs, subjects: findingModel.tables.map((t) => qualifiedKey(t.name)) }) : null,
+      audit: request.audit ? correlateAudit(request.audit, { findings, proofs: before.proofs, subjects: findingModel.tables.map((t) => qualifiedKey(t.name)), untrusted: integrity.status !== "INTACT" }) : null,
       migrationErrors: prepared.migrationErrors,
       warnings,
       notChecked,

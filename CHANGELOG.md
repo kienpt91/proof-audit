@@ -11,5 +11,12 @@
 
 ### Notes
 
+- A run with an `INTEGRITY_VIOLATION` never exports a `rejected` record (the correlation with the static report is `INCONCLUSIVE` for every table, and the note of each static finding in the reports says why).
+- When `findings.json` is not written, a `findings.json` left in `--out` by an earlier run is removed and stderr says so.
+- The conformance check is as strict as the reference validator on Windows device names (`com`/`lpt` with the digits 1-9 and `¹²³`, case folding by Unicode) and on the size of the canonical key of list items that must be unique.
+- A position that is the first statement naming the object (not its declaration) is said so in the trace and the evidence.
+- Fingerprints of `rejected` records follow `saas-audit`: names from `subject`, else the whole title; repeated ones are numbered `@2` in line order.
+- The confidence reason of a `confirmed` record lists the other probes of its table that gave no clear answer.
+- Locating objects the reader never saw declared tokenises the migrations once, not once per object.
 - `findings.json` is derived output. `proof-audit verify` does not read it, and the hashes of `proofs.jsonl` do not cover it. It is not written when an input path is not a safe repository-relative path or when it would not conform to the format.
 - Nothing in `findings.json` is redacted or escaped; see [SECURITY.md](SECURITY.md).

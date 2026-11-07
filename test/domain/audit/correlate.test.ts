@@ -83,6 +83,24 @@ describe("correlateAudit: status per static finding", () => {
     expect(result.findings[0]?.note).toContain("anon-delete");
   });
 
+  it("is INCONCLUSIVE for a table whose results cannot be trusted, whatever the probes say", () => {
+    const denied: Proof = { ...proof("public.notes", "anon-read"), observation: { status: "rows", rows: 0 }, verdict: "NOT_REPRODUCED" };
+    const finding = tableFinding("public.notes", "INCONCLUSIVE", { inconclusive: [{ id: "public.notes", reason: "the migrations touched the test environment" }] });
+    const input = { findings: [finding], proofs: [denied], subjects: ["public.notes"] };
+    const mine = [staticFinding({ rule: "supabase-policy-permissive", title: 'Policy "p" lets everyone read every row of notes' }), staticFinding()];
+    // trusted run: the denied probe refutes the finding it is about
+    expect(correlateAudit(audit(mine), input).findings.some((f) => f.proofStatus === "NOT_REPRODUCED")).toBe(true);
+    const untrusted = correlateAudit(audit(mine), { ...input, untrusted: true });
+    expect(untrusted.findings.map((f) => f.proofStatus)).toEqual(["INCONCLUSIVE", "INCONCLUSIVE"]);
+    expect(untrusted.findings[0]?.note).toContain("can be trusted");
+    expect(untrusted.findings[0]?.proofIds).toEqual([]);
+  });
+
+  it("keeps STATIC_ONLY for a finding that names no table or a table that was not analysed, even when untrusted", () => {
+    const result = correlateAudit(audit([staticFinding({ table: null }), staticFinding({ table: "public.other", line: 2 })]), { findings: [], proofs: [], subjects: ["public.notes"], untrusted: true });
+    expect(result.findings.map((f) => f.proofStatus)).toEqual(["STATIC_ONLY", "STATIC_ONLY"]);
+  });
+
   it("takes the verdict of the table for a policy finding whose title does not say what it is about", () => {
     const finding = tableFinding("public.notes", "PROVEN", { provenBy: ["public.notes/cross-read"] });
     const result = correlateAudit(audit([staticFinding({ rule: "supabase-policy-permissive" })]), {

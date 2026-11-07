@@ -4,6 +4,7 @@ import type { ConfirmedRecord, FindingRecord, NeedsValidationRecord, RejectedRec
 import { parseMigrations } from "../../src/domain/sql/parser.js";
 import { proof } from "../fixtures/reports.js";
 import { analyseSql, auditFrom, exported, file, MIGRATION, recordsOf } from "../helpers/export.js";
+import type { ModelSandbox } from "../helpers/model-sandbox.js";
 
 const SQL = `-- notes app
 create table public.notes (
@@ -113,6 +114,24 @@ describe("findings.json from a proven run", () => {
     expect(noFix.remediation.code_changes).toBeUndefined();
   });
 
+  it("says in the confirmed record that the other probes of a proven table gave no clear answer, and writes no needs_validation for them", async () => {
+    const noUpdates = (sandbox: ModelSandbox): void => {
+      const run = sandbox.run.bind(sandbox);
+      sandbox.run = async (probes) => (await run(probes)).map((o, i) => (probes[i]?.sql.startsWith("UPDATE") ? { status: "not-run" as const, reason: "the run time budget was used up before this probe ran" } : o));
+    };
+    const run = await analyseSql(SQL, { tweak: noUpdates });
+    const finding = run.report.findings.find((f) => f.subject === "public.tickets");
+    expect(finding?.tier).toBe("PROVEN");
+    expect(finding?.inconclusive.length).toBeGreaterThan(0);
+    const records = exported(run).records.filter((r) => r.fingerprint.includes("public.tickets"));
+    expect(records.map((r) => r.verdict)).toEqual(["confirmed"]);
+    const reason = (records[0] as ConfirmedRecord).confidence.reason;
+    expect(reason).toContain(`${finding?.inconclusive.length} other probe(s) on public.tickets gave no clear answer`);
+    expect(reason).toContain("public.tickets/");
+    // a table with every probe answered says nothing of the kind
+    expect(confirmedOf(exported(await analyseSql(SQL)).records, "public.tickets").confidence.reason).not.toContain("no clear answer");
+  });
+
   it("takes the severity from the anchor table", async () => {
     const records = exported(await analyseSql(SQL, { fixed: fixedModel })).records;
     const notes = confirmedOf(records, "public.notes");
@@ -120,6 +139,17 @@ describe("findings.json from a proven run", () => {
     expect(notes.severity.impact.score).toBe("critical");
     expect(notes.severity.likelihood.score).toBe("high");
     expect(confirmedOf(records, "public.tickets").severity.overall_severity).toBe("critical");
+  });
+
+  it("agrees with the severity of the table in report.json when the table has one record", async () => {
+    const run = await analyseSql(SQL, { fixed: fixedModel });
+    const records = exported(run).records;
+    for (const subject of ["public.notes", "public.tickets"]) {
+      const forTable = records.filter((r): r is ConfirmedRecord => r.verdict === "confirmed" && r.fingerprint.includes(`/${subject}/`));
+      expect(forTable).toHaveLength(1);
+      expect(run.report.findings.find((f) => f.subject === subject)?.severity).toBe("critical");
+      expect(forTable[0]?.severity.overall_severity).toBe("critical");
+    }
   });
 
   it("is the same text on every run and keeps the fingerprints when lines move", async () => {
@@ -219,6 +249,58 @@ describe("findings.json for what could not be proven", () => {
   });
 });
 
+describe("findings.json when the test environment was touched and a static report is given", () => {
+  const DOCS = `create table public.docs (id uuid primary key, user_id uuid references auth.users (id), body text);
+alter table public.docs enable row level security;
+
+create policy "Owner write" on public.docs for update to authenticated
+  using (user_id = (select auth.uid())) with check (user_id = (select auth.uid()));
+`;
+  const staticReport = JSON.stringify({
+    tool: { name: "saas-audit", version: "0.1.0" },
+    findings: [{ rule: "supabase-policy-permissive", severity: "high", file: MIGRATION, line: 4, title: 'Policy "Owner write" lets authenticated update every row of docs', message: "WITH CHECK (true) is always true." }],
+  });
+
+  it("makes no refusal of the database refute a static finding: no rejected record, every table is a candidate", async () => {
+    const audit = auditFrom(staticReport);
+    // the same migrations and audit on an intact run: the finding is refused and exported as rejected
+    expect(exported(await analyseSql(DOCS, { audit })).records.map((r) => r.verdict)).toEqual(["rejected"]);
+
+    const run = await analyseSql(DOCS, { audit, tamperedAfter: 2 });
+    expect(run.report.integrity.status).toBe("INTEGRITY_VIOLATION");
+    expect(run.report.audit?.findings.map((f) => f.proofStatus)).toEqual(["INCONCLUSIVE"]);
+    const out = exported(run);
+    expect(checkFindingsText(out.json ?? "")).toEqual([]);
+    expect(out.records.length).toBeGreaterThan(0);
+    expect(out.records.some((r) => r.verdict === "rejected")).toBe(false);
+    expect(out.records.every((r) => r.verdict === "needs_validation" && r.fingerprint.endsWith("/untested"))).toBe(true);
+    expect(out.notes.join("\n")).toContain("static finding(s) from --from-audit");
+  });
+
+  it("builds no rejected record even from a report whose correlation was made before the integrity check", async () => {
+    const audit = auditFrom(staticReport);
+    const intact = await analyseSql(DOCS, { audit });
+    const tampered = await analyseSql(DOCS, { audit, tamperedAfter: 2 });
+    // an audit section that does say NOT_REPRODUCED, as an intact run gives, next to a quarantined run
+    const mixed = { ...tampered.report, audit: intact.report.audit };
+    expect(recordsOf({ ...tampered, report: mixed }).records.some((r) => r.verdict === "rejected")).toBe(false);
+  });
+});
+
+describe("findings.json is not written for a name that would not conform", () => {
+  it("is not written for a lone surrogate in a policy name or a Windows device name with a superscript digit", async () => {
+    const lone = SQL.replace('"Everyone reads"', '"Everyone \ud800 reads"');
+    const out = exported(await analyseSql(lone));
+    expect(out.json).toBeNull();
+    expect(out.notes.join(" ")).toContain("findings.json was not written");
+    for (const name of ["supabase/migrations/com\u00b9.sql", "m/LPT\u00b2", "m/cloc\u212a$.sql"]) {
+      const result = exported(await analyseSql(SQL, { files: [file(SQL, name)] }));
+      expect(result.json, name).toBeNull();
+      expect(result.notes.join(" ")).toContain("findings.json was not written");
+    }
+  });
+});
+
 describe("findings.json with a static auditor report", () => {
   const DOCS = `create table public.docs (id uuid primary key, user_id uuid references auth.users (id), body text);
 alter table public.docs enable row level security;
@@ -244,11 +326,17 @@ create policy "Owner read" on public.docs for select to authenticated using (use
     const record = out.records[0] as RejectedRecord;
     expect(out.records).toHaveLength(1);
     expect(record.verdict).toBe("rejected");
-    expect(record.fingerprint).toBe("saas-audit/supabase-policy-permissive:supabase/migrations/001.sql:public.docs:Owner+20write");
+    // the report carries no subject array, so the identity is the one saas-audit builds from the whole title
+    expect(record.fingerprint).toBe("saas-audit/supabase-policy-permissive:supabase/migrations/001.sql:Policy+20+22Owner+20write+22+20lets+20authenticated+20update+20every+20row+20of+20docs");
     expect(record.reason).toContain("denied every attack");
     expect(record.claimed_root_cause).toContain("saas-audit 0.1.0");
     expect(record.trace.map((t) => [t.kind, t.line])).toEqual([["entrypoint", 4], ["sink", 1]]);
     expect(record.evidence.some((e) => e.description.includes("docs/cross-update"))).toBe(true);
+  });
+
+  it("uses the table and policy of the subject array when the static report carries one, as saas-audit does", async () => {
+    const out = exported(await analyseSql(DOCS, { audit: auditFrom(staticReport([{ ...flagged, subject: ["public.docs", "Owner write"] }])) }));
+    expect((out.records[0] as RejectedRecord).fingerprint).toBe("saas-audit/supabase-policy-permissive:supabase/migrations/001.sql:public.docs:Owner+20write");
   });
 
   it("prefers the subject array of the static report to the title, so a quote in a policy name is safe", async () => {
@@ -264,12 +352,15 @@ create policy "Owner read" on public.docs for select to authenticated using (use
     expect(out.records.some((r) => r.verdict === "rejected")).toBe(false);
   });
 
-  it("numbers repeated static fingerprints instead of repeating them", async () => {
-    const out = exported(await analyseSql(DOCS, { audit: auditFrom(staticReport([flagged, { ...flagged, line: 5 }])) }));
+  it("numbers repeated static fingerprints in the order of their lines, as saas-audit does", async () => {
+    // the report lists the later line first: the numbering follows the line, not the position in the report
+    const out = exported(await analyseSql(DOCS, { audit: auditFrom(staticReport([{ ...flagged, line: 5 }, flagged])) }));
     expect(out.records.map((r) => r.fingerprint).sort()).toEqual([
-      "saas-audit/supabase-policy-permissive:supabase/migrations/001.sql:public.docs:Owner+20write",
-      "saas-audit/supabase-policy-permissive:supabase/migrations/001.sql:public.docs:Owner+20write:@2",
+      "saas-audit/supabase-policy-permissive:supabase/migrations/001.sql:Policy+20+22Owner+20write+22+20lets+20authenticated+20update+20every+20row+20of+20docs",
+      "saas-audit/supabase-policy-permissive:supabase/migrations/001.sql:Policy+20+22Owner+20write+22+20lets+20authenticated+20update+20every+20row+20of+20docs@2",
     ]);
+    const first = out.records.find((r) => !r.fingerprint.endsWith("@2")) as RejectedRecord;
+    expect(first.evidence.some((e) => e.description.includes("supabase/migrations/001.sql:4"))).toBe(true);
   });
 });
 
@@ -382,7 +473,7 @@ create view public.note_titles as select id, user_id, title from public.notes;
     const run = await analyseSql(DOCS, { audit: auditFrom(text) });
     const [record] = recordsOf({ ...run, audit: null }).records;
     expect(record?.verdict).toBe("rejected");
-    expect(record?.fingerprint).toBe("saas-audit/supabase-policy-permissive:elsewhere/m.sql:public.docs:r");
+    expect(record?.fingerprint).toBe("saas-audit/supabase-policy-permissive:elsewhere/m.sql:Policy+20+22r+22+20lets+20authenticated+20read+20every+20row+20of+20docs");
     expect((record as RejectedRecord).claimed_root_cause).toContain("supabase-policy-permissive");
     expect((record as RejectedRecord).description).toBe('Policy "r" lets authenticated read every row of docs');
     // the position the auditor reported is outside the file, so only the statement the reader found is cited

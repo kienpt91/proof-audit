@@ -22,6 +22,8 @@ interface Harness {
   readonly out: string[];
   readonly err: string[];
   readonly written: Map<string, Record<string, string>>;
+  /** Names that already sit in an output directory before the run, as left by an earlier run. */
+  readonly existing: Map<string, Set<string>>;
   readonly files: Map<string, string>;
   readonly endpoints: LoopbackEndpoint[];
   dockerCalls: number;
@@ -30,7 +32,7 @@ interface Harness {
 
 function harness(options: ModelSandboxOptions, files: Record<string, string> = { "supabase/migrations/001.sql": SQL }): Harness {
   const store = new Map(Object.entries(files));
-  const h: Harness = { deps: undefined as never, out: [], err: [], written: new Map(), files: store, endpoints: [], dockerCalls: 0, sandboxes: [] };
+  const h: Harness = { deps: undefined as never, out: [], err: [], written: new Map(), existing: new Map(), files: store, endpoints: [], dockerCalls: 0, sandboxes: [] };
   const provider = (): TrackedProvider => {
     const p: SandboxProvider = {
       async create() {
@@ -56,7 +58,12 @@ function harness(options: ModelSandboxOptions, files: Record<string, string> = {
       if (t === undefined) throw new InputError(`cannot read ${path}`);
       return t;
     },
-    writeOutputs: async (dir, f) => void h.written.set(dir, { ...f }),
+    writeOutputs: async (dir, f, stale) => {
+      const before = h.existing.get(dir) ?? new Set<string>();
+      h.written.set(dir, { ...f });
+      h.existing.set(dir, new Set([...[...before].filter((n) => !stale.includes(n)), ...Object.keys(f)]));
+      return stale.filter((n) => before.has(n) && !(n in f));
+    },
     dockerProvider: () => {
       h.dockerCalls += 1;
       return provider();
@@ -167,6 +174,28 @@ describe("proof-audit rls", () => {
     expect("report.json" in files).toBe(true);
     expect(stderr(h)).toContain("findings.json was not written");
     expect(stderr(h)).toContain("project root");
+  });
+
+  it("removes the findings.json of an earlier run, and says so, when this run cannot write one", async () => {
+    for (const path of ["/elsewhere/001.sql", "m/com\u00b9.sql"]) {
+      const h = harness(vulnerable, { [path]: SQL });
+      h.existing.set("o", new Set(["findings.json", "report.json"]));
+      await run(h, "rls", path.slice(0, path.lastIndexOf("/")), "--out", "o");
+      expect(stderr(h)).toContain("findings.json was not written");
+      expect(stderr(h)).toContain("removed findings.json of an earlier run from o");
+      expect(h.existing.get("o")?.has("findings.json")).toBe(false);
+    }
+  });
+
+  it("says nothing about removal when there was no earlier findings.json, or when this run writes one", async () => {
+    const none = harness(vulnerable, { "/elsewhere/001.sql": SQL });
+    await run(none, "rls", "/elsewhere", "--out", "o");
+    expect(stderr(none)).not.toContain("removed");
+    const fresh = harness(vulnerable);
+    fresh.existing.set("o", new Set(["findings.json"]));
+    await run(fresh, "rls", "supabase/migrations", "--out", "o");
+    expect(stderr(fresh)).not.toContain("removed");
+    expect(fresh.existing.get("o")?.has("findings.json")).toBe(true);
   });
 
   it("writes findings.json only with --out", async () => {

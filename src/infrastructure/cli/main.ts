@@ -27,7 +27,8 @@ export interface CliDeps {
   readonly clock: Clock;
   readonly loadSql: (paths: readonly string[]) => Promise<LoadedFiles>;
   readonly readText: (path: string, maxBytes: number) => Promise<string>;
-  readonly writeOutputs: (dir: string, files: Readonly<Record<string, string>>) => Promise<void>;
+  /** Writes `files` into `dir` and removes the names in `stale` that are not among them; returns the names removed. */
+  readonly writeOutputs: (dir: string, files: Readonly<Record<string, string>>, stale: readonly string[]) => Promise<readonly string[]>;
   /** The throwaway-container provider. */
   readonly dockerProvider: () => TrackedProvider;
   /** A provider for a Postgres server on this machine's loopback interface; only ever called with a validated endpoint. */
@@ -37,6 +38,7 @@ export interface CliDeps {
 }
 
 const TOOL = "proof-audit";
+const FINDINGS_FILE = "findings.json";
 
 function message(e: unknown): string {
   return terminalText(e instanceof Error ? e.message : "unknown error", 400);
@@ -57,7 +59,7 @@ function providerFor(database: DatabaseChoice, deps: CliDeps): TrackedProvider |
   return deps.urlProvider(endpoint.value, { yesThisIsThrowaway: database.yesThisIsThrowaway });
 }
 
-function artifacts(report: AnalysisReport, command: Extract<Command, { kind: "rls" }>, out: string, deps: CliDeps, loaded: LoadedFiles, audit: ParsedAudit | null): { readonly files: Record<string, string>; readonly notes: readonly string[] } {
+function artifacts(report: AnalysisReport, command: Extract<Command, { kind: "rls" }>, out: string, deps: CliDeps, loaded: LoadedFiles, audit: ParsedAudit | null): { readonly files: Record<string, string>; readonly stale: readonly string[]; readonly notes: readonly string[] } {
   const fix = report.fix?.statements ?? [];
   const proofs = [...report.proofs, ...(report.verification?.after ?? [])];
   const meta = { tool: report.tool, image: report.environment.image, inputs: report.inputs, fixStatements: fix, fixSha256: null };
@@ -77,8 +79,8 @@ function artifacts(report: AnalysisReport, command: Extract<Command, { kind: "rl
   if (report.fix) files["fix.sql"] = report.fix.sql;
   // Derived from the report and the migrations; `verify` never reads it.
   const findings = renderFindings(report, loaded.files, audit);
-  if (findings.json !== null) files["findings.json"] = findings.json;
-  return { files, notes: findings.notes };
+  if (findings.json !== null) files[FINDINGS_FILE] = findings.json;
+  return { files, stale: findings.json === null ? [FINDINGS_FILE] : [], notes: findings.notes };
 }
 
 async function runRls(command: Extract<Command, { kind: "rls" }>, deps: CliDeps): Promise<number> {
@@ -120,8 +122,9 @@ async function runRls(command: Extract<Command, { kind: "rls" }>, deps: CliDeps)
   if (command.out !== null) {
     try {
       const written = artifacts(report, command, command.out, deps, loaded, audit);
-      await deps.writeOutputs(command.out, written.files);
+      const removed = await deps.writeOutputs(command.out, written.files, written.stale);
       for (const note of written.notes) deps.stderr(`${TOOL}: ${terminalText(note, 600)}\n`);
+      for (const name of removed) deps.stderr(`${TOOL}: removed ${name} of an earlier run from ${terminalText(command.out, 200)}: this run wrote none, and the old one does not describe it\n`);
       deps.stderr(`${TOOL}: wrote ${Object.keys(written.files).sort().join(", ")} to ${terminalText(command.out, 200)}\n`);
     } catch (e) {
       deps.stderr(`${TOOL}: ${message(e)}\n`);

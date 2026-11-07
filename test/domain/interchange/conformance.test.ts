@@ -162,11 +162,55 @@ describe("what is refused", () => {
 
 describe("isSafeRelativePath", () => {
   it("accepts ordinary repository paths", () => {
-    for (const p of ["a.sql", "supabase/migrations/20260105090000_init.sql", "dir/.hidden/file", "a-b_c.d/e"]) expect(isSafeRelativePath(p)).toBe(true);
+    for (const p of ["a.sql", "supabase/migrations/20260105090000_init.sql", "dir/.hidden/file", "a-b_c.d/e", "com10.sql", "com0", "console.sql", "cloc.sql"]) expect(isSafeRelativePath(p)).toBe(true);
   });
 
   it("refuses whatever could leave the repository or mean something else on another platform", () => {
     for (const p of ["", " a", "a ", "/a", "~a", "a\\b", "a:b", "..", "a/..", "./a", "a/", "a//b", "nul", "COM1.txt", "lpt9", "a/Clock$", "a.", "a /b", "\u0000", "a\u200bb", "a\u2028b"]) expect(isSafeRelativePath(p)).toBe(false);
+  });
+
+  it("refuses the device names the reference validator refuses: superscript digits and Unicode case folding", () => {
+    for (const p of ["com\u00b9.sql", "COM\u00b2", "a/lpt\u00b3.x", "LPT\u00b9", "cloc\u212a$", "a/cloc\u212a$.sql", "conin$", "conout$.txt", "NUL.sql", "Aux", "prn.d/x"]) expect(isSafeRelativePath(p), p).toBe(false);
+  });
+});
+
+describe("the size limits of the uniqueness check", () => {
+  const KEY_LIMIT = 1024 * 1024;
+  // the canonical text of a string is `string:"` + the string + `"`: nine bytes more
+  const payload = (bytes: number, lead = "x"): string => lead + "x".repeat(bytes - 1);
+
+  it("accepts a list item whose canonical key is exactly 1 MiB and refuses one byte more", () => {
+    expect(errorsOf([mutate(confirmed(), (r) => (r.execution.payloads = [payload(KEY_LIMIT - 9)]))])).toEqual([]);
+    expect(errorsOf([mutate(confirmed(), (r) => (r.execution.payloads = [payload(KEY_LIMIT - 8)]))])).toEqual(["$[0].execution.payloads[0]: canonical key exceeds 1048576 byte limit"]);
+  });
+
+  it("counts UTF-8 bytes, not characters: 2, 3 and 4 bytes per character and a lone surrogate as 3", () => {
+    const message = "$[0].execution.payloads[0]: canonical key exceeds 1048576 byte limit";
+    // [character, the most that fit next to the 9 bytes of `string:"` and `"`]
+    const rows: [string, number][] = [["\u00e9", 524_283], ["\u20ac", 349_522], ["\ud83d\ude00", 262_141]];
+    for (const [ch, fits] of rows) {
+      expect(errorsOf([mutate(confirmed(), (r) => (r.execution.payloads = [ch.repeat(fits)]))])).toEqual([]);
+      expect(errorsOf([mutate(confirmed(), (r) => (r.execution.payloads = [ch.repeat(fits + 1)]))])).toEqual([message]);
+    }
+    // a lone surrogate is another error of its own, and still counts three bytes
+    expect(errorsOf([mutate(confirmed(), (r) => (r.execution.payloads = ["\ud800".repeat(349_523)]))])).toContain(message);
+  });
+
+  it("compares numbers, booleans and null by their canonical text", () => {
+    expect(errorsOf([mutate(confirmed(), (r) => (r.execution.payloads = [1, 1]))])).toContain("$[0].execution.payloads[1]: duplicate of an earlier item");
+    expect(errorsOf([mutate(confirmed(), (r) => (r.execution.payloads = [-0, 0]))])).toContain("$[0].execution.payloads[1]: duplicate of an earlier item");
+    expect(errorsOf([mutate(confirmed(), (r) => (r.execution.payloads = [null, null, true, true]))])).toEqual(expect.arrayContaining(["$[0].execution.payloads[1]: duplicate of an earlier item", "$[0].execution.payloads[3]: duplicate of an earlier item"]));
+  });
+
+  it("refuses a list whose canonical keys together pass 5 MiB", () => {
+    const six = Array.from({ length: 6 }, (_, i) => payload(KEY_LIMIT - 9, String.fromCharCode(97 + i)));
+    expect(errorsOf([mutate(confirmed(), (r) => (r.execution.payloads = six))])).toEqual(["$[0].execution.payloads: canonical uniqueness set exceeds 5242880 byte limit"]);
+    expect(errorsOf([mutate(confirmed(), (r) => (r.execution.payloads = six.slice(0, 5)))])).toEqual([]);
+  });
+
+  it("sizes nested objects by their canonical text too", () => {
+    const big = { file: "db/001.sql", line: 3, description: "x".repeat(KEY_LIMIT) };
+    expect(errorsOf([mutate(confirmed(), (r) => (r.evidence = [big]))])).toEqual(["$[0].evidence[0]: canonical key exceeds 1048576 byte limit"]);
   });
 });
 

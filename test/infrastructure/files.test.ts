@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -115,6 +115,31 @@ describe("writeOutputs", () => {
   it("creates the directory and writes each file", async () => {
     await writeOutputs(join(dir, "out/run1"), { "a.txt": "A", "b.txt": "B" });
     expect(readFileSync(join(dir, "out/run1/a.txt"), "utf8")).toBe("A");
+  });
+
+  it("removes the stale names that this run did not write, and returns them", async () => {
+    mkdirSync(join(dir, "out"));
+    writeFileSync(join(dir, "out", "findings.json"), "[old]");
+    writeFileSync(join(dir, "out", "keep.txt"), "keep");
+    expect(await writeOutputs(join(dir, "out"), { "a.txt": "A" }, ["findings.json", "absent.json"])).toEqual(["findings.json"]);
+    expect(existsSync(join(dir, "out", "findings.json"))).toBe(false);
+    expect(readFileSync(join(dir, "out", "keep.txt"), "utf8")).toBe("keep");
+  });
+
+  it("does not remove a stale name that it just wrote", async () => {
+    expect(await writeOutputs(join(dir, "out"), { "findings.json": "[]" }, ["findings.json"])).toEqual([]);
+    expect(readFileSync(join(dir, "out", "findings.json"), "utf8")).toBe("[]");
+  });
+
+  it("removes a symbolic link at a stale name without touching its target, and refuses a directory", async () => {
+    const victim = join(dir, "victim.txt");
+    writeFileSync(victim, "keep me");
+    mkdirSync(join(dir, "out"));
+    symlinkSync(victim, join(dir, "out", "findings.json"));
+    expect(await writeOutputs(join(dir, "out"), { "a.txt": "A" }, ["findings.json"])).toEqual(["findings.json"]);
+    expect(readFileSync(victim, "utf8")).toBe("keep me");
+    mkdirSync(join(dir, "out", "findings.json"));
+    await expect(writeOutputs(join(dir, "out"), { "a.txt": "A" }, ["findings.json"])).rejects.toThrow("directory is in the way");
   });
 
   it("refuses to write through a symbolic link", async () => {

@@ -2,6 +2,8 @@ import { describe, expect, it } from "vitest";
 import { findMention, locateStatic, locateTableCause, locateViewCause, type SourceMap } from "../../../src/domain/interchange/locate.js";
 import { tableRootCauses, viewRootCauses } from "../../../src/domain/interchange/rootcause.js";
 import { parseMigrations } from "../../../src/domain/sql/parser.js";
+import type { SqlStatement } from "../../../src/domain/sql/statement.js";
+import { growth, MAX_GROWTH } from "../../helpers/growth.js";
 
 function mapOf(sql: string, path = "m.sql"): SourceMap & { readonly model: ReturnType<typeof parseMigrations>["model"] } {
   const parsed = parseMigrations([{ path, content: sql }]);
@@ -33,6 +35,29 @@ describe("findMention", () => {
   it("skips statements that are not SQL", () => {
     const parsed = parseMigrations([{ path: "m.sql", content: "\\connect other\nselect 1;\n" }]);
     expect(findMention(parsed.statements, ["connect"])).toBeNull();
+  });
+});
+
+describe("findMention at scale", () => {
+  /** One statement per object, none of them a declaration the reader indexes: the case of many tables created by dynamic SQL. */
+  const make = (n: number) => ({
+    statements: Array.from({ length: n }, (_, i): SqlStatement => ({ file: "m.sql", line: i + 1, text: `comment on table public.t${i} is 'x'`, kind: "sql" })),
+    names: Array.from({ length: n }, (_, i) => `t${i}`),
+  });
+
+  it("finds each object at its own line", () => {
+    const { statements, names } = make(50);
+    expect(names.map((name) => findMention(statements, [name])?.line)).toEqual(names.map((_, i) => i + 1));
+    expect(findMention(statements, ["t7", "public"])).toEqual({ file: "m.sql", line: 8 });
+    expect(findMention(statements, ["t7", "t8"])).toBeNull();
+  });
+
+  it("looks up many objects in time linear in the input, not objects times input", () => {
+    const lookupAll = ({ statements, names }: ReturnType<typeof make>): void => {
+      const fresh = [...statements]; // a new list, so nothing is carried over from an earlier call
+      for (const name of names) findMention(fresh, [name]);
+    };
+    expect(growth(make, 150, lookupAll)).toBeLessThan(MAX_GROWTH);
   });
 });
 
@@ -81,6 +106,26 @@ create policy b on public.t for all to authenticated using (auth.role() = 'authe
     const hidden = mapOf("create table public.t (id uuid primary key);\ndo $$ begin null; end $$;\ncomment on policy \"A\" on public.t is 'x';\n");
     const cause = causes.find((c) => c.kind === "policy-always-true");
     expect(steps(locateTableCause(hidden, table, cause ?? null, false))[0]).toEqual(["entrypoint", 3]);
+  });
+
+  it("says in the trace and in the note when the line is only the first statement that names the object", () => {
+    const hidden = mapOf("create table public.t (id uuid primary key);\ndo $$ begin null; end $$;\ncomment on policy \"A\" on public.t is 'x';\n");
+    const cause = causes.find((c) => c.kind === "policy-always-true");
+    const located = locateTableCause(hidden, table, cause ?? null, false);
+    expect(located?.note).toContain("first statement that names it");
+    expect(located?.trace[0]?.description).toContain("first statement that names it");
+    // the sink is the table's own CREATE TABLE here, so it carries no such remark
+    expect(located?.trace.at(-1)?.description).not.toContain("first statement");
+
+    const ghost = mapOf("-- ghost\ncomment on table public.ghost is 'x';\n");
+    const viaMention = locateTableCause(ghost, { ...table, name: { schema: "public", name: "ghost" } }, null, false);
+    expect(viaMention?.note).toContain("first statement that names it");
+    expect(viaMention?.trace[0]?.description).toContain("first statement that names it");
+  });
+
+  it("has no note when the declaration was read", () => {
+    expect(locateTableCause(m, table, null, false)?.note).toBe("");
+    expect(locateTableCause(m, table, causes.find((c) => c.kind === "policy-always-true") ?? null, false)?.note).toBe("");
   });
 
   it("is one sink for what no static cause explains, and for a table that could not be tested", () => {

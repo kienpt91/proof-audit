@@ -744,9 +744,9 @@ With `--out <dir>` the run also writes `findings.json`: the same results as an a
 | a static finding given with `--from-audit` that the database refused | `rejected`, with the recorded refusal as the reason |
 | CLEAN, or a static finding that was proven or could not be tested | no record |
 
-A static finding is never `confirmed` by this export, and `confirmed` is never produced without a probe that the database let through. Severity of a `confirmed` record comes from a fixed anchor table (anonymous write or read of per-user rows: critical; a signed-in user reaching another user's rows: high; an anonymous read of a table with no owner column: medium), the same rule `report.json` uses; confidence is `high` only when the before/after check passed for the table. Every record points at real lines of your migrations (the policy, the `ALTER TABLE ... ROW LEVEL SECURITY`, the `CREATE TABLE`); an object whose declaration cannot be found gets no record and the run says so.
+A static finding is never `confirmed` by this export, and `confirmed` is never produced without a probe that the database let through. Severity of a `confirmed` record comes from a fixed anchor table (anonymous write or read of per-user rows: critical; a signed-in user reaching another user's rows: high; an anonymous read of a table with no owner column: medium), the same rule `report.json` uses for a whole table, applied to the probes of one record (a table with several root causes has several records, so the severity of a record can be lower than the severity of that table in `report.json`); confidence is `high` only when the before/after check passed for the table. Every record points at a real statement of your migrations: normally the one that declares the object (the policy, the `ALTER TABLE ... ROW LEVEL SECURITY`, the `CREATE TABLE`). When the reader never saw an object declared (it was made by SQL it cannot read), the line is the first statement that names it, which can be a `GRANT`, a `COMMENT` or a `DROP`, and the trace text and the evidence say so; an object that no statement names gets no record and the run says so. A table with a proven attack gets `confirmed` records only for what was proven: its other probes that gave no clear answer get no `needs_validation` record, and the confidence reason of the `confirmed` record lists them. In a run with an `INTEGRITY_VIOLATION` there is no `rejected` record and no `confirmed` one: nothing the database answered can be trusted.
 
-`findings.json` is **derived output**: `proof-audit verify` never reads it and the hashes of `proofs.jsonl` do not cover it (its records cite the probes they rest on by id and content hash, so they can be checked against `proofs.jsonl`). It is written only if it conforms to the format, so it is skipped, with a message, when an input path is not a safe repository-relative path (run from the project root). Like `report.json`, it keeps text from your migrations as found, so a program that renders it must sanitise it.
+`findings.json` is **derived output**: `proof-audit verify` never reads it and the hashes of `proofs.jsonl` do not cover it (its records cite the probes they rest on by id and content hash, so they can be checked against `proofs.jsonl`). It is written only if it conforms to the format, so it is skipped, with a message, when an input path is not a safe repository-relative path (run from the project root) or a name would not conform; when it is skipped, a `findings.json` left in `--out` by an earlier run is removed (and stderr says so), so that an old file never sits next to the results of this run. The fingerprint of a `rejected` record is the one the static auditor gives the finding: from the `subject` of its report when it has one, else from its title, so it is the same only for a report written by a version of the static auditor that builds its fingerprints that way. Like `report.json`, it keeps text from your migrations as found, so a program that renders it must sanitise it.
 
 ## How it works
 
@@ -764,25 +764,25 @@ The design records are in [docs/adr](docs/adr) and the vocabulary and context ma
 
 | Suite | Where | Cases | Needs |
 | --- | --- | --- | --- |
-| domain unit and property tests | `test/domain` | 1,187 | nothing |
-| application tests with an in-memory fake database, including the findings.json export | `test/application` | 164 | nothing |
-| adapter tests (fake docker, fake transport, statement builders, files, args, cleanup) and contract suite | `test/infrastructure`, `test/contract` | 126 | nothing |
+| domain unit and property tests | `test/domain` | 1,202 | nothing |
+| application tests with an in-memory fake database, including the findings.json export | `test/application` | 170 | nothing |
+| adapter tests (fake docker, fake transport, statement builders, files, args, cleanup) and contract suite | `test/infrastructure`, `test/contract` | 129 | nothing |
 | architecture (dependency rule) | `test/architecture` | 84 | nothing |
-| command line end to end, in-memory | `test/e2e` | 40 | nothing |
-| **offline total** | `npm test` | **1,601** | |
-| real PostgreSQL 16.14: analysis (23), sandbox (16), CLI (14), **hostile migrations (43)** | `test/integration` | 96 | `scripts/integration.sh` |
+| command line end to end, in-memory | `test/e2e` | 42 | nothing |
+| **offline total** | `npm test` | **1,627** | |
+| real PostgreSQL 16.14: analysis (23), sandbox (16), CLI (14), **hostile migrations (44)** | `test/integration` | 97 | `scripts/integration.sh` |
 | default container mode for real, including hostile migrations | `test/smoke` | 3 | `scripts/docker-smoke.sh` |
 
 (Parameterised tests count once per row.) Offline coverage:
 
 | Layer | Statements | Lines | Branches |
 | --- | --- | --- | --- |
-| `src/domain` | 95.74% | 97.71% | 89.67% |
-| `src/application` | 96.92% | 98.20% | 84.65% |
-| `src/infrastructure` | 87.79% | 88.51% | 86.31% |
-| **overall** | **94.61%** | **96.24%** | **88.78%** |
+| `src/domain` | 95.69% | 97.61% | 89.54% |
+| `src/application` | 96.92% | 98.20% | 84.86% |
+| `src/infrastructure` | 87.99% | 88.63% | 86.65% |
+| **overall** | **94.60%** | **96.19%** | **88.74%** |
 
-The infrastructure layer is lower offline because the `pg` transport and the URL provider only run against a real server. The integration suite, measured on its own, covers 75.4% of lines overall (`pg-transport.ts` 92%, `sandbox.ts` 92%, `statements.ts` 100%, `catalog-sql.ts` 100%). Integration coverage is reported separately: `scripts/integration.sh --coverage`. The findings.json export (`src/domain/interchange`) is covered offline at 98.3% of statements and 99.3% of lines: conformance of the output to the format, the severity anchor table, fingerprint stability when lines move, root-cause attribution, and the rule that no record has a position that is not a statement of the migration; the integration suite checks the file written for the vulnerable example against a real database.
+The infrastructure layer is lower offline because the `pg` transport and the URL provider only run against a real server. The integration suite, measured on its own, covers 75.0% of lines overall (`pg-transport.ts` 92%, `sandbox.ts` 92%, `statements.ts` 100%, `catalog-sql.ts` 100%). Integration coverage is reported separately: `scripts/integration.sh --coverage`. The findings.json export (`src/domain/interchange`) is covered offline at 97.4% of statements and 98.3% of lines: conformance of the output to the format, the severity anchor table, fingerprint stability when lines move, root-cause attribution, and the rule that no record has a position that is not a statement of the migration; the integration suite checks the file written for the vulnerable example against a real database.
 
 The hostile-migration tests (`test/integration/hostile.integration.test.ts`) build each attack at run time: a replaced probe function, shadowed built-ins and a repointed `search_path`, direct catalog writes, a redefined `auth.uid()`, event triggers, `ALTER SYSTEM`, `COPY ... PROGRAM`, server-side files, untrusted extensions, a table hidden through `ALTER EXTENSION`, rules and triggers that change probe results, a trigger that tries to forge the reply, and platform tampering done by a real superuser mid-run. Each was first reproduced as a false CLEAN, a hidden table or a privileged statement that ran, and now produces the observed verdict, a refusal, or an INTEGRITY_VIOLATION.
 

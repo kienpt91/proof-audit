@@ -1,5 +1,5 @@
 import { constants } from "node:fs";
-import { lstat, mkdir, open, readdir } from "node:fs/promises";
+import { lstat, mkdir, open, readdir, unlink } from "node:fs/promises";
 import { join, relative, sep } from "node:path";
 import type { LoadedFile, LoadedFiles } from "../../application/ports.js";
 import { LIMITS } from "../../domain/limits.js";
@@ -115,8 +115,11 @@ export async function loadSqlInputs(paths: readonly string[], cwd: string): Prom
 /**
  * Write each output file without following a symbolic link or opening a FIFO that already sits at that name: the
  * directory may come from a checkout that contains `report.md -> ~/.zshrc`. Existing regular files are replaced.
+ * Each name in `stale` that is not among the files written is removed (the entry itself, never what a link points
+ * to) so that a file of an earlier run does not sit next to the outputs of this one; the names removed are
+ * returned. A directory at such a name is an error.
  */
-export async function writeOutputs(dir: string, files: Readonly<Record<string, string>>): Promise<void> {
+export async function writeOutputs(dir: string, files: Readonly<Record<string, string>>, stale: readonly string[] = []): Promise<readonly string[]> {
   await mkdir(dir, { recursive: true });
   const info = await lstat(dir);
   if (info.isSymbolicLink() || !info.isDirectory()) throw new InputError(`${dir}: output must be a real directory`);
@@ -136,4 +139,19 @@ export async function writeOutputs(dir: string, files: Readonly<Record<string, s
       await handle.close();
     }
   }
+  const removed: string[] = [];
+  for (const name of stale) {
+    if (Object.hasOwn(files, name)) continue;
+    const target = join(dir, name);
+    const info = await lstat(target).catch(() => null);
+    if (info === null) continue;
+    if (info.isDirectory()) throw new InputError(`${displayPath(target, process.cwd())}: a directory is in the way of an output name`);
+    try {
+      await unlink(target);
+    } catch {
+      throw new InputError(`${displayPath(target, process.cwd())}: cannot remove the file of an earlier run`);
+    }
+    removed.push(name);
+  }
+  return removed;
 }

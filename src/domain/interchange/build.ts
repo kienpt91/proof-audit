@@ -8,7 +8,7 @@ import { qualifiedKey } from "../schema/model.js";
 import { primaryOwnerColumn } from "../schema/owner.js";
 import { truncateCodePoints } from "../text/sanitize.js";
 import { hasVisible } from "./conformance.js";
-import { rlsFingerprint, staticFingerprint, type RootCauseKind } from "./fingerprint.js";
+import { rlsFingerprint, staticFingerprint, staticNames, type RootCauseKind } from "./fingerprint.js";
 import { locateStatic, locateTableCause, locateViewCause, type Located, type SourceMap } from "./locate.js";
 import type { Condition, ConfirmedRecord, EvidenceItem, FindingRecord, NeedsValidationRecord, RejectedRecord } from "./records.js";
 import { groupByRootCause, tableRootCauses, viewRootCauses, type RootCause } from "./rootcause.js";
@@ -138,9 +138,13 @@ function confirmed(input: ExportInput, finding: Finding, subject: Subject, cause
   const section = report.fix === null ? null : fixSectionFor(report.fix.sql, key);
   const verified = finding.fixStatus === "verified";
   const owner = subject.owner ?? "the owner column";
+  // A proven table gets no needs_validation record for its other attacks; the confirmed record says that they exist.
+  const unclear = unique(finding.inconclusive.map((i) => i.id));
+  const unclearNote = unclear.length === 0 ? "" : ` ${unclear.length} other probe(s) on ${key} gave no clear answer (${unclear.slice(0, 5).join(", ")}${unclear.length > 5 ? ", ..." : ""}); they have no record of their own, see proofs.jsonl.`;
   const anchor = located.anchor;
+  const noted = located.note === "" ? "" : ` ${located.note}`;
   const evidence: EvidenceItem[] = [
-    { file: anchor.file, line: anchor.line, description: cause?.text ?? `The ${finding.subjectKind} the proven attacks ran against; no policy or setting the static reader found explains them.` },
+    { file: anchor.file, line: anchor.line, description: `${cause?.text ?? `The ${finding.subjectKind} the proven attacks ran against; no policy or setting the static reader found explains them.`}${noted}` },
     ...proofs.map((p) => ({ file: anchor.file, line: anchor.line, description: `Probe ${p.id} (recorded in proofs.jsonl, content hash sha256:${p.hash}): ${p.reason}` })),
   ];
   return {
@@ -165,8 +169,8 @@ function confirmed(input: ExportInput, finding: Finding, subject: Subject, cause
     },
     severity: severityFor(kinds, subject.owner !== null || subject.view !== undefined, finding.subjectKind),
     confidence: verified
-      ? { score: "high", reason: `Reproduced against a real database (${proofs.length} probe(s) PROVEN_VULNERABLE) and the before/after check passed: ${finding.fixNote}` }
-      : { score: "medium", reason: `Reproduced against a real database (${proofs.length} probe(s) PROVEN_VULNERABLE), but the proposed fix is not verified (${finding.fixStatus}): ${finding.fixNote}` },
+      ? { score: "high", reason: `Reproduced against a real database (${proofs.length} probe(s) PROVEN_VULNERABLE) and the before/after check passed: ${finding.fixNote}${unclearNote}` }
+      : { score: "medium", reason: `Reproduced against a real database (${proofs.length} probe(s) PROVEN_VULNERABLE), but the proposed fix is not verified (${finding.fixStatus}): ${finding.fixNote}${unclearNote}` },
   };
 }
 
@@ -190,13 +194,13 @@ function needsValidation(report: AnalysisReport, finding: Finding, subject: Subj
     description: finding.attackerCan,
     claimed_root_cause: cause?.text ?? "No root cause is claimed: nothing the static reader found explains unauthorized access, and the attacks could not all be run, so the access control of this object is unverified.",
     trace: [...located.trace],
-    evidence: [{ file: located.anchor.file, line: located.anchor.line, description: cause?.text ?? `The ${finding.subjectKind} that could not be fully tested.` }],
+    evidence: [{ file: located.anchor.file, line: located.anchor.line, description: `${cause?.text ?? `The ${finding.subjectKind} that could not be fully tested.`}${located.note === "" ? "" : ` ${located.note}`}` }],
     blockers: blockers.length > 0 ? blockers : ["No exploit probe produced a clear answer for this object."],
     validation_plan: { local },
   };
 }
 
-function rejected(input: ExportInput, c: CorrelatedAuditFinding, parsed: ParsedAuditFinding | undefined, located: Located, subject: { table: string; policy: string | null }): RejectedRecord {
+function rejected(input: ExportInput, c: CorrelatedAuditFinding, parsed: ParsedAuditFinding | undefined, located: Located, fingerprint: string): RejectedRecord {
   const { report, audit, inputs } = input;
   const source = `${audit?.tool ?? c.rule}${audit?.version ? ` ${audit.version}` : ""}`;
   const flagged = resolveInput(c.file, c.line, inputs);
@@ -204,7 +208,7 @@ function rejected(input: ExportInput, c: CorrelatedAuditFinding, parsed: ParsedA
   const title = hasVisible(c.title) ? c.title : `Static finding ${c.rule} (no readable title)`;
   const detail = message === null ? "" : ` ${truncateCodePoints(message, 500)}`;
   const evidence: EvidenceItem[] = [
-    { file: located.anchor.file, line: located.anchor.line, description: `The statement behind the static finding ${c.rule} (${c.severity}) reported at ${c.file === "" ? "an unknown file" : `${c.file}:${c.line}`}.` },
+    { file: located.anchor.file, line: located.anchor.line, description: `The statement behind the static finding ${c.rule} (${c.severity}) reported at ${c.file === "" ? "an unknown file" : `${c.file}:${c.line}`}.${located.note === "" ? "" : ` ${located.note}`}` },
     ...(flagged === null || (flagged.path === located.anchor.file && c.line === located.anchor.line) ? [] : [{ file: flagged.path, line: c.line, description: `The position the static auditor flagged for ${c.rule}.` }]),
     ...c.proofIds.flatMap((id) => {
       const p = report.proofs.find((x) => x.id === id && x.phase === "before");
@@ -213,7 +217,7 @@ function rejected(input: ExportInput, c: CorrelatedAuditFinding, parsed: ParsedA
   ];
   return {
     verdict: "rejected",
-    fingerprint: staticFingerprint(c.rule, c.file, subject.table, subject.policy),
+    fingerprint,
     title,
     description: message ?? title,
     claimed_root_cause: `The static auditor (${source}, rule ${c.rule}) claimed: ${title}.${detail}`,
@@ -221,6 +225,26 @@ function rejected(input: ExportInput, c: CorrelatedAuditFinding, parsed: ParsedA
     evidence,
     reason: `${sentence(c.note)}. A refusal for two synthetic users and an anonymous caller refutes the attacks that were run; it does not show that the table is safe.`,
   };
+}
+
+/**
+ * The number `saas-audit` gives each finding of its report that shares an identity with others: the first in file
+ * order (line, then position in the report) has none, the next `@2`, and so on. Counted over every finding of the
+ * report, not only those that become records.
+ */
+function staticNumbers(findings: readonly ParsedAuditFinding[]): ReadonlyMap<ParsedAuditFinding, number> {
+  const groups = new Map<string, { finding: ParsedAuditFinding; index: number }[]>();
+  findings.forEach((finding, index) => {
+    const key = staticFingerprint(finding.rule, finding.file, staticNames(finding.subject, finding.title));
+    const list = groups.get(key) ?? [];
+    list.push({ finding, index });
+    groups.set(key, list);
+  });
+  const out = new Map<ParsedAuditFinding, number>();
+  for (const list of groups.values()) {
+    list.sort((a, b) => a.finding.line - b.finding.line || a.index - b.index).forEach((e, i) => out.set(e.finding, i + 1));
+  }
+  return out;
 }
 
 /**
@@ -265,7 +289,15 @@ export function buildRecords(input: ExportInput): ExportResult {
     }
   }
 
+  // A refusal only refutes a static finding when the database can be trusted; after tampering nothing is judged.
+  if (quarantined) {
+    const count = report.audit?.findings.length ?? 0;
+    if (count > 0) omitted.push({ subject: `${count} static finding(s) from --from-audit`, reason: "the migrations touched the test environment, so no refusal by the database can refute them" });
+    return { records, omitted };
+  }
+
   const parsedBy = new Map((input.audit?.findings ?? []).map((f) => [`${f.rule}\u0000${f.file}\u0000${f.line}\u0000${f.title}`, f] as const));
+  const numbers = staticNumbers(input.audit?.findings ?? []);
   const seen = new Map<string, number>();
   for (const c of report.audit?.findings ?? []) {
     if (c.proofStatus !== "NOT_REPRODUCED") continue;
@@ -281,10 +313,12 @@ export function buildRecords(input: ExportInput): ExportResult {
       omitted.push({ subject: label, reason: "no statement of the migrations declares its table, so there is no line to point at" });
       continue;
     }
-    const record = rejected(input, c, parsed, located, { table: named.table, policy: named.policy });
-    const n = (seen.get(record.fingerprint) ?? 0) + 1;
-    seen.set(record.fingerprint, n);
-    records.push(n === 1 ? record : { ...record, fingerprint: `${record.fingerprint}:@${n}` });
+    const base = staticFingerprint(c.rule, c.file, staticNames(parsed?.subject ?? null, c.title));
+    const rank = parsed === undefined ? 1 : (numbers.get(parsed) ?? 1);
+    const numbered = rank === 1 ? base : `${base}@${rank}`;
+    const n = (seen.get(numbered) ?? 0) + 1;
+    seen.set(numbered, n);
+    records.push(rejected(input, c, parsed, located, n === 1 ? numbered : `${numbered}@${n}`));
   }
   return { records, omitted };
 }

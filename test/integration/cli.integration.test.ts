@@ -84,7 +84,8 @@ describe.skipIf(!haveDatabase)("proof-audit CLI against real PostgreSQL", () => 
     const first: { verdict: string; fingerprint: string }[] = JSON.parse(readFileSync(join(outDir, "findings.json"), "utf8"));
     expect(records.filter((x) => x.verdict !== "rejected")).toEqual(first);
     expect(records.filter((x) => x.verdict === "rejected").map((x) => x.fingerprint)).toEqual([
-      "saas-audit/supabase-policy-permissive:supabase/migrations/20260105090000_init.sql:public.documents:Owners+20can+20edit+20documents",
+      // the committed report has no `subject` array, so the identity is built from the whole title, as saas-audit builds it
+      "saas-audit/supabase-policy-permissive:supabase/migrations/20260105090000_init.sql:Policy+20+22Owners+20can+20edit+20documents+22+20lets+20authenticated+20update+20every+20row+20of+20documents",
     ]);
   });
 

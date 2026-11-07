@@ -31,20 +31,40 @@ describe("severity anchors", () => {
     expect(block.impact.reason).toBe(IMPACT_ANCHORS[id].reason);
   });
 
-  it("agrees with the severity that report.json gives, for every combination of attacks", () => {
+  it("follows the written rules, for every combination of attacks (an oracle that shares no code with the implementation)", () => {
+    const anonWrites = ["anon-insert", "anon-update", "anon-delete"];
+    const crossUser = ["cross-read", "cross-insert", "cross-update", "cross-delete", "reassign-owner", "view-read-cross"];
+    const oracle = (kinds: readonly string[], owner: boolean, subject: string): string => {
+      if (kinds.some((k) => anonWrites.includes(k))) return "critical";
+      if (kinds.includes("anon-read") || kinds.includes("view-read-anon")) return owner || subject === "view" ? "critical" : "medium";
+      return kinds.some((k) => crossUser.includes(k)) ? "high" : "medium";
+    };
     for (let mask = 1; mask < 1 << EXPLOITS.length; mask++) {
       const kinds = EXPLOITS.filter((_, i) => (mask >> i) & 1);
       for (const owner of [true, false]) {
         for (const subject of ["table", "view"] as const) {
-          expect(severityFor(kinds, owner, subject).overall_severity).toBe(toScore(severityOf(kinds, owner, subject)));
+          const want = oracle(kinds, owner, subject);
+          expect(severityFor(kinds, owner, subject).overall_severity, `${kinds.join()} ${owner} ${subject}`).toBe(want);
+          expect(severityOf(kinds, owner, subject), `${kinds.join()} ${owner} ${subject}`).toBe(want);
         }
       }
     }
   });
 
-  it("keeps the table in step with the function: every anchor has the impact the function gives it", () => {
-    for (const [, kinds, owner, subject, id] of TABLE) expect(IMPACT_ANCHORS[id].impact).toBe(toScore(severityOf(kinds, owner, subject)));
-    expect(Object.keys(IMPACT_ANCHORS).sort()).toEqual(["anon-read-owned", "anon-read-unowned", "anon-write", "cross-user", "other"]);
+  it("gives each anchor the impact the docs table lists, literally", () => {
+    expect(Object.fromEntries(Object.entries(IMPACT_ANCHORS).map(([id, a]) => [id, a.impact]))).toEqual({
+      "anon-write": "critical",
+      "anon-read-owned": "critical",
+      "anon-read-unowned": "medium",
+      "cross-user": "high",
+      other: "medium",
+    });
+  });
+
+  it("can give one record of a table a lower severity than the table as a whole", () => {
+    // report.json rates the table by every attack proven on it; a record is rated by the attacks of its own root cause
+    expect(severityOf(["anon-read", "cross-update"], true, "table")).toBe("critical");
+    expect(severityFor(["cross-update"], true, "table").overall_severity).toBe("high");
   });
 
   it("never lets the overall severity exceed the impact", () => {

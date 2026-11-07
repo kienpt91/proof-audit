@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { encodePath, encodeSegment, rlsFingerprint, staticFingerprint } from "../../../src/domain/interchange/fingerprint.js";
+import { encodePath, encodeSegment, rlsFingerprint, staticFingerprint, staticNames } from "../../../src/domain/interchange/fingerprint.js";
 
 const PATTERN = /^[A-Za-z0-9][A-Za-z0-9._:/@+-]*$/;
 
@@ -66,19 +66,32 @@ describe("rlsFingerprint", () => {
 });
 
 describe("staticFingerprint", () => {
-  it("follows the scheme shared with the static auditor", () => {
-    expect(staticFingerprint("supabase-policy-permissive", "supabase/migrations/20260105090000_init.sql", "public.tickets", "Anyone can use tickets")).toBe(
+  it("follows the scheme of the static auditor: rule, path, then every name of the subject", () => {
+    expect(staticFingerprint("supabase-policy-permissive", "supabase/migrations/20260105090000_init.sql", ["public.tickets", "Anyone can use tickets"])).toBe(
       "saas-audit/supabase-policy-permissive:supabase/migrations/20260105090000_init.sql:public.tickets:Anyone+20can+20use+20tickets",
     );
-    expect(staticFingerprint("supabase-rls-missing", "m.sql", "public.profiles", null)).toBe("saas-audit/supabase-rls-missing:m.sql:public.profiles");
+    expect(staticFingerprint("supabase-rls-missing", "m.sql", ["public.profiles"])).toBe("saas-audit/supabase-rls-missing:m.sql:public.profiles");
   });
 
   it("does not depend on a line number", () => {
-    expect(staticFingerprint("r", "f.sql", "public.t", null)).toBe(staticFingerprint("r", "f.sql", "public.t", null));
+    expect(staticFingerprint("r", "f.sql", ["public.t"])).toBe(staticFingerprint("r", "f.sql", ["public.t"]));
   });
 
-  it("matches the pattern when the file or rule is odd", () => {
-    expect(staticFingerprint("odd rule", "a b/é.sql", "s.t", "p:q")).toMatch(PATTERN);
-    expect(staticFingerprint("", "", "s.t", null)).toMatch(PATTERN);
+  it("matches the pattern when the file, rule or names are odd", () => {
+    expect(staticFingerprint("odd rule", "a b/\u00e9.sql", ["s.t", "p:q"])).toMatch(PATTERN);
+    expect(staticFingerprint("", "", ["s.t"])).toMatch(PATTERN);
+  });
+});
+
+describe("staticNames", () => {
+  it("takes the non-empty names of the subject array, else the whole title", () => {
+    expect(staticNames(["public.t", "", "p"], "a title")).toEqual(["public.t", "p"]);
+    expect(staticNames(null, "Table public.t has no row level security")).toEqual(["Table public.t has no row level security"]);
+    expect(staticNames([], "t")).toEqual(["t"]);
+    expect(staticNames([""], "t")).toEqual(["t"]);
+  });
+
+  it("builds the title-based identity that saas-audit gives a report without subject", () => {
+    expect(staticFingerprint("supabase-rls-missing", "m.sql", staticNames(null, "Table public.profiles has no RLS"))).toBe("saas-audit/supabase-rls-missing:m.sql:Table+20public.profiles+20has+20no+20RLS");
   });
 });

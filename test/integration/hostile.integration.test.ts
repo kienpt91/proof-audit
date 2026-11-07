@@ -2,7 +2,9 @@ import pg from "pg";
 import { describe, expect, it } from "vitest";
 import { analyzeRls } from "../../src/application/analyze.js";
 import type { ProbeRun, Sandbox, SandboxProvider } from "../../src/application/ports.js";
+import { renderFindings } from "../../src/application/report/findings.js";
 import { verifyEvidence } from "../../src/application/verify.js";
+import { parseAuditReport } from "../../src/domain/audit/import.js";
 import { encodeProofsJsonl, decodeProofsJsonl } from "../../src/domain/evidence/proofs.js";
 import { sealProof } from "../../src/domain/proof/hash.js";
 import { UrlSandboxProvider } from "../../src/infrastructure/postgres/url-provider.js";
@@ -237,6 +239,24 @@ describe.skipIf(!haveDatabase)("a compromised platform is detected, and the prob
     );
     expect(r.integrity.violations.map((v) => v.detail)).toContain("function auth.uid() changed (after the probes)");
     expect(r.findings.every((f) => f.tier === "INCONCLUSIVE")).toBe(true);
+  });
+
+  it("a replaced auth.uid() does not let the database refute a static finding: no rejected record is exported", async () => {
+    const sql = "create table public.docs (id uuid primary key default gen_random_uuid(), user_id uuid not null references auth.users (id));\nalter table public.docs enable row level security;\ncreate policy \"Owner write\" on public.docs for update to authenticated using (user_id = auth.uid());";
+    const parsed = parseAuditReport(
+      JSON.stringify({ tool: { name: "saas-audit", version: "0.1.0" }, findings: [{ rule: "supabase-policy-permissive", severity: "high", file: "m/001.sql", line: 3, title: 'Policy "Owner write" lets authenticated update every row of docs', message: "" }] }),
+    );
+    if (!parsed.ok) throw new Error(parsed.error);
+    const files = [sqlFile("m/001.sql", sql)];
+    const report = await analyzeRls(
+      { files, loadWarnings: [], inputsComplete: true, audit: parsed.value, proposeFix: true, tool },
+      { provider: tamperBeforeProbes(["create or replace function auth.uid() returns uuid language sql as $$ select 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb'::uuid $$"]), clock },
+    );
+    expect(report.integrity.status).toBe("INTEGRITY_VIOLATION");
+    expect(report.audit?.findings.map((f) => f.proofStatus)).toEqual(["INCONCLUSIVE"]);
+    const records: { verdict: string; fingerprint: string }[] = JSON.parse(renderFindings(report, files, parsed.value).json ?? "null");
+    expect(records.length).toBeGreaterThan(0);
+    expect(records.every((r) => r.verdict === "needs_validation" && r.fingerprint.endsWith("/untested"))).toBe(true);
   });
 
   it("an event trigger created by the superuser is detected", async () => {

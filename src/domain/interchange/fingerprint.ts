@@ -54,11 +54,20 @@ export function rlsFingerprint(schema: string, name: string, kind: RootCauseKind
 }
 
 /**
- * The fingerprint of a finding of the author's static auditor (`saas-audit`), built from the fields of its JSON
- * report exactly as that auditor builds it for its own record: `saas-audit/<rule>:<path>:<table>[:<policy>]`.
- * A static finding that this tool's database refused therefore keeps the identity it has in the static record.
+ * The names a static finding is identified by: the non-empty entries of the `subject` array of its report
+ * (`[table]` or `[table, policy name]`), else its whole title. This is the choice `saas-audit` makes.
  */
-export function staticFingerprint(rule: string, file: string, table: string, policy: string | null): string {
-  const base = `saas-audit/${encodeSegment(rule)}:${encodePath(file)}:${encodeSegment(table)}`;
-  return policy === null ? base : `${base}:${encodeSegment(policy)}`;
+export function staticNames(subject: readonly string[] | null, title: string): readonly string[] {
+  const names = (subject ?? []).filter((s) => s !== "");
+  return names.length > 0 ? names : [title];
+}
+
+/**
+ * The fingerprint of a finding of the author's static auditor (`saas-audit`), built as that auditor builds it for
+ * its own record: `saas-audit/<rule>:<path>:<name>[:<name>...]`, with the names from `staticNames`. A static
+ * finding that this tool's database refused then keeps the identity of the static record, for every report that
+ * `saas-audit` writes (with or without `subject`).
+ */
+export function staticFingerprint(rule: string, file: string, names: readonly string[]): string {
+  return `saas-audit/${encodeSegment(rule)}:${encodePath(file)}:${names.map(encodeSegment).join(":")}`;
 }
