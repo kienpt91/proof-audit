@@ -23,7 +23,7 @@ import {
 } from "../schema/model.js";
 import { defaultPrivileges, EXPOSED_SCHEMAS } from "../supabase/defaults.js";
 import { splitStatements } from "./splitter.js";
-import type { ParseResult, SourceFile, SqlStatement } from "./statement.js";
+import type { ParseResult, SourceFile, SourceIndex, SourceSpot, SqlStatement, TableSource } from "./statement.js";
 import { tokenize, type Token } from "./tokenizer.js";
 
 export interface ParseOptions {
@@ -242,6 +242,10 @@ interface TableState {
   policies: Policy[];
   checks: string[];
   privileges: Privs;
+  /** Where the table was declared, where row level security was last switched, and where each policy got its definition. */
+  created: SourceSpot;
+  rlsSpot: SourceSpot | null;
+  policySpots: Map<string, SourceSpot>;
 }
 
 interface ViewState {
@@ -251,6 +255,7 @@ interface ViewState {
   definition: string | null;
   dependsOn: QualifiedName[];
   privileges: Privs;
+  created: SourceSpot;
 }
 
 interface DefaultOp {
@@ -287,6 +292,11 @@ class Builder {
   file = "";
   line = 0;
 
+  /** The statement being read. */
+  spot(): SourceSpot {
+    return { file: this.file, line: this.line };
+  }
+
   warn(message: string): void {
     this.warnings.push({ file: this.file, line: this.line, message });
   }
@@ -312,7 +322,18 @@ class Builder {
 }
 
 function newTable(b: Builder, name: QualifiedName): TableState {
-  return { name, columns: [], rlsEnabled: false, rlsForced: false, policies: [], checks: [], privileges: b.initialPrivileges(name.schema) };
+  return {
+    name,
+    columns: [],
+    rlsEnabled: false,
+    rlsForced: false,
+    policies: [],
+    checks: [],
+    privileges: b.initialPrivileges(name.schema),
+    created: b.spot(),
+    rlsSpot: null,
+    policySpots: new Map(),
+  };
 }
 
 function newColumn(name: string, type: string): ColState {
@@ -1050,7 +1071,10 @@ function tableAction(b: Builder, s: Stream, subject: Subject): void {
         const table = needTable(b, subject, "ROW LEVEL SECURITY");
         if (table === undefined) return;
         if (head.value === "force") table.rlsForced = true;
-        else table.rlsEnabled = head.value === "enable";
+        else {
+          table.rlsEnabled = head.value === "enable";
+          table.rlsSpot = b.spot();
+        }
       } else if (!(s.isWord("trigger") || s.isWord("rule") || s.isWord("replica") || s.isWord("always"))) {
         b.warn(`ALTER TABLE ${snip(subject.key)}: unsupported ${head.value.toUpperCase()} action`);
       }
@@ -1278,6 +1302,7 @@ function createPolicy(b: Builder, s: Stream): void {
   const at = target.table.policies.findIndex((p) => p.name === policy.name);
   if (at >= 0) target.table.policies[at] = policy;
   else target.table.policies.push(policy);
+  target.table.policySpots.set(policy.name, b.spot());
 }
 
 function alterPolicy(b: Builder, s: Stream): void {
@@ -1293,13 +1318,16 @@ function alterPolicy(b: Builder, s: Stream): void {
     b.warn(`ALTER POLICY ${snip(target.name)}: no such policy on ${snip(qualifiedKey(target.qname))}`);
     return;
   }
+  const renamed = clauses.rename ?? old.name;
   table.policies[at] = {
     ...old,
-    name: clauses.rename ?? old.name,
+    name: renamed,
     roles: clauses.roles ?? old.roles,
     using: clauses.using ?? old.using,
     withCheck: clauses.withCheck ?? old.withCheck,
   };
+  table.policySpots.delete(old.name);
+  table.policySpots.set(renamed, b.spot());
 }
 
 function dropPolicy(b: Builder, s: Stream): void {
@@ -1308,6 +1336,7 @@ function dropPolicy(b: Builder, s: Stream): void {
   if (target === null || target.table === undefined) return;
   const before = target.table.policies.length;
   target.table.policies = target.table.policies.filter((p) => p.name !== target.name);
+  target.table.policySpots.delete(target.name);
   if (before === target.table.policies.length && !ifExists) b.warn(`DROP POLICY ${snip(target.name)}: no such policy on ${snip(qualifiedKey(target.qname))}`);
 }
 
@@ -1478,6 +1507,7 @@ function createView(b: Builder, s: Stream, temp: boolean, orReplace: boolean): v
     definition: body.length === 0 ? null : joinTokens(body),
     dependsOn: viewDependencies(body, b.schema),
     privileges: existing?.privileges ?? b.initialPrivileges(name.schema),
+    created: b.spot(),
   });
 }
 
@@ -1753,5 +1783,9 @@ export function parseMigrations(files: readonly SourceFile[], options: ParseOpti
     tables: [...b.tables.values()].map(freezeTable),
     views: [...b.views.values()].map(freezeView),
   };
-  return { statements, model, warnings: b.warnings, complete };
+  const sources: SourceIndex = {
+    tables: new Map([...b.tables].map(([key, t]): [string, TableSource] => [key, { created: t.created, rowSecurity: t.rlsSpot, policies: t.policySpots }])),
+    views: new Map([...b.views].map(([key, v]): [string, SourceSpot] => [key, v.created])),
+  };
+  return { statements, model, sources, warnings: b.warnings, complete };
 }
